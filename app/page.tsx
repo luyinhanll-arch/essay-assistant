@@ -29,7 +29,7 @@ export default function HomePage() {
       {/* ── Nav ── */}
       <nav className="border-b border-stone-200 px-8 py-4 flex items-center justify-between">
         <span className="font-bold text-orange-500 tracking-tight">EssayMind</span>
-        <Link href="/interview" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
+        <Link href="/onboarding" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
           开始写文书 →
         </Link>
       </nav>
@@ -49,7 +49,7 @@ export default function HomePage() {
           不依赖中介，不靠 AI 模板——访谈、定位、框架、初稿，一步一步写出真正属于你的文书。
         </p>
         <Link
-          href="/interview"
+          href="/onboarding"
           className="inline-flex items-center gap-2 bg-stone-900 hover:bg-stone-800 text-white font-medium px-8 py-3.5 rounded-xl text-base transition-colors"
         >
           免费开始写文书 →
@@ -98,7 +98,7 @@ export default function HomePage() {
             每一个有真实追求的申请者，都值得用自己的故事打动招生官。
           </p>
           <Link
-            href="/interview"
+            href="/onboarding"
             className="inline-flex items-center gap-2 bg-stone-900 hover:bg-stone-800 text-white font-medium px-8 py-3.5 rounded-xl text-base transition-colors"
           >
             立即开始 →

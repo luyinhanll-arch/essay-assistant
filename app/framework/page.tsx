@@ -153,7 +153,7 @@ function SectionCard({
 
 export default function FrameworkPage() {
   const router = useRouter()
-  const { messages, selectedPersona, targetProgram, framework, essayType, setFramework, setEssayType, setDraft } = useAppStore()
+  const { messages, selectedPersona, targetProgram, framework, essayType, step1Summaries, setFramework, setEssayType, setDraft } = useAppStore()
 
   const [step, setStep] = useState<'choose' | 'edit'>(framework.length > 0 ? 'edit' : 'choose')
   const [localEssayType, setLocalEssayType] = useState<EssayType>(essayType)
@@ -221,16 +221,12 @@ export default function FrameworkPage() {
     setAiLoading(true)
     setAiError('')
 
-    const transcript = messages
-      .map((m) => `${m.role === 'user' ? '申请者' : 'AI顾问'}: ${m.content}`)
-      .join('\n\n')
-
     try {
       const res = await fetch('/api/framework', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transcript,
+          summaries: step1Summaries,
           persona: selectedPersona,
           targetProgram,
           essayType: localEssayType,

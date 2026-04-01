@@ -10,7 +10,9 @@ export async function POST(req: Request) {
     coveredDimensions = [],
     deferredDimensions = [],
     emptyDimensions = [],
-  }: { messages: Message[]; coveredDimensions?: string[]; deferredDimensions?: string[]; emptyDimensions?: string[] } = await req.json()
+    cvText = '',
+    cvAnalysis = '',
+  }: { messages: Message[]; coveredDimensions?: string[]; deferredDimensions?: string[]; emptyDimensions?: string[]; cvText?: string; cvAnalysis?: string } = await req.json()
 
   // Exclude both covered and deferred from the normal list
   const missing = ALL_DIMENSIONS.filter(
@@ -57,8 +59,35 @@ export async function POST(req: Request) {
     }
   }
 
+  // Convert structured cvAnalysis into natural prompt text
+  let cvAnalysisForPrompt = ''
+  if (cvAnalysis.trim()) {
+    const entries: { name: string; reason: string }[] = []
+    let cur: { name: string; reason: string } | null = null
+    for (const raw of cvAnalysis.split('\n')) {
+      const line = raw.trim()
+      if (!line) continue
+      if (/^经历名称[：:]/.test(line)) {
+        if (cur) entries.push(cur)
+        cur = { name: line.replace(/^经历名称[：:]/, '').trim(), reason: '' }
+      } else if (/^深挖原因[：:]/.test(line) && cur) {
+        cur.reason = line.replace(/^深挖原因[：:]/, '').trim()
+      } else if (cur && cur.reason) {
+        cur.reason += ' ' + line
+      }
+    }
+    if (cur) entries.push(cur)
+    if (entries.length > 0) {
+      cvAnalysisForPrompt = entries
+        .map((e, i) => `${i + 1}. 【${e.name}】：${e.reason}`)
+        .join('\n')
+    } else {
+      cvAnalysisForPrompt = cvAnalysis.trim()
+    }
+  }
+
   return streamDeepSeek(
-    buildInterviewSystemPrompt(missing),
+    buildInterviewSystemPrompt(missing, cvText, cvAnalysisForPrompt),
     messages.map((m) => ({ role: m.role, content: m.content }))
   )
 }

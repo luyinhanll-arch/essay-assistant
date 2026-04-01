@@ -706,7 +706,7 @@ export default function PersonaPage() {
   const router = useRouter()
   const {
     messages, personas, selectedPersona,
-    emptyDimensions, coveredDimensions,
+    emptyDimensions, coveredDimensions, interviewComplete,
     step1Summaries, setStep1Summary,
     setPersonas, setSelectedPersona,
   } = useAppStore()
@@ -724,8 +724,10 @@ export default function PersonaPage() {
 
   // Dims that need (re)generation: covered, non-empty, and step1Summary absent or cleared.
   // Used as effect dep so the effect re-fires whenever the interview page invalidates a summary.
+  const LAST_DIMS = ['motivation', 'plan', 'personal']
   const pendingDimsKey = coveredDimensions
     .filter(d => !emptyDimensions.includes(d) && !step1Summaries[d])
+    .filter(d => !LAST_DIMS.includes(d) || interviewComplete)
     .join(',')
 
   // Generate detailed summaries for the confirmation page.
@@ -762,11 +764,14 @@ export default function PersonaPage() {
       const dims = pendingDimsKey.split(',').filter(Boolean)
       if (dims.length === 0) return
 
-      const nonExp = dims.filter(d => !EXP_DIMS.includes(d))
-      const exp    = EXP_DIMS.filter(d => dims.includes(d))
+      const exp       = EXP_DIMS.filter(d => dims.includes(d))
+      const early     = dims.filter(d => !EXP_DIMS.includes(d) && !LAST_DIMS.includes(d))
+      const last      = LAST_DIMS.filter(d => dims.includes(d))
 
-      await Promise.all(nonExp.map(d => fetchSummary(d)))
+      // 1. academic 等早期维度并行生成
+      await Promise.all(early.map(d => fetchSummary(d)))
 
+      // 2. 经历维度顺序生成（需要 relatedSummaries 去重）
       for (const dim of exp) {
         const relatedSummaries: Record<string, string> = {}
         for (const other of EXP_DIMS) {
@@ -777,6 +782,11 @@ export default function PersonaPage() {
         }
         await fetchSummary(dim, relatedSummaries)
       }
+
+      // 3. 最后生成申请动机、未来规划、个人特质
+      for (const dim of last) {
+        await fetchSummary(dim)
+      }
     }
 
     generateAll()
@@ -785,14 +795,11 @@ export default function PersonaPage() {
 
   async function generatePersonas() {
     setLoading(true); setError('')
-    const transcript = messages
-      .map(m => `${m.role === 'user' ? '申请者' : 'AI顾问'}: ${m.content}`)
-      .join('\n\n')
     try {
       const res = await fetch('/api/highlights', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript }),
+        body: JSON.stringify({ summaries: step1Summaries }),
       })
       const data = await res.json()
       if (data.personas) { setPersonas(data.personas); setSelectedPersona(data.personas[0]); setStep(2) }

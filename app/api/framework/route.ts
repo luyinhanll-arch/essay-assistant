@@ -2,15 +2,25 @@ import { callDeepSeek } from '@/lib/deepseek'
 import { SOP_FRAMEWORK_SYSTEM_PROMPT, PS_FRAMEWORK_SYSTEM_PROMPT } from '@/lib/prompts'
 import type { Persona, EssayType } from '@/lib/types'
 
+const DIM_LABELS: Record<string, string> = {
+  academic:   '学术背景',
+  project:    '项目经历',
+  internship: '实习经历',
+  research:   '科研经历',
+  motivation: '申请动机',
+  plan:       '未来规划',
+  personal:   '个人特质',
+}
+
 export async function POST(req: Request) {
   const {
-    transcript,
+    summaries,
     persona,
     targetProgram,
     essayType,
     schoolNotes,
   }: {
-    transcript: string
+    summaries: Record<string, string>
     persona: Persona | null
     targetProgram: string
     essayType: EssayType
@@ -23,13 +33,18 @@ export async function POST(req: Request) {
   const major = programParts[1] || '（未指定）'
   const degree = programParts[2] || '（未指定）'
 
+  const summaryText = Object.entries(summaries)
+    .filter(([, v]) => v && v.trim())
+    .map(([k, v]) => `【${DIM_LABELS[k] ?? k}】\n${v.trim()}`)
+    .join('\n\n')
+
   const personaText = persona
     ? `人设标签：${persona.title}
 叙事定位：${persona.tagline}
 人设描述：${persona.description}
 支撑经历：${persona.evidence}
 文书侧重：${persona.focus}`
-    : '（未选择人设方向，请根据访谈记录自行提炼核心角度）'
+    : '（未选择人设方向，请根据经历总结自行提炼核心角度）'
 
   const schoolNotesText = schoolNotes.trim()
     ? `\n## 学校/项目特殊要求或偏好\n${schoolNotes.trim()}`
@@ -47,8 +62,8 @@ ${essayType}
 ${personaText}
 ${schoolNotesText}
 
-## 申请者访谈记录
-${transcript}
+## 申请者各维度经历总结
+${summaryText}
 
 请严格围绕选定的人设方向构建文书框架，让每个段落都服务于这个叙事角度。suggestedContent 必须直接引用申请者的具体经历，不要写通用建议。`
 

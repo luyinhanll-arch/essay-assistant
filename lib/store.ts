@@ -6,6 +6,8 @@ import type { Message, Persona, FrameworkSection, EssayType } from './types'
 
 interface AppStore {
   messages: Message[]
+  cvText: string
+  cvAnalysis: string
   interviewComplete: boolean
   coveredDimensions: string[]
   deferredDimensions: string[]                    // 暂缓维度（用户说不清楚，最后再回头）
@@ -24,6 +26,8 @@ interface AppStore {
   addMessage: (msg: Message) => void
   updateLastAssistantMessage: (content: string, rawContent?: string) => void
   setInterviewComplete: (v: boolean) => void
+  setCvText: (t: string) => void
+  setCvAnalysis: (a: string) => void
   setCoveredDimensions: (dims: string[]) => void
   deferDimension: (dim: string) => void
   setDimensionMessageIndex: (dimension: string, index: number) => void
@@ -37,11 +41,14 @@ interface AppStore {
   setActiveDimension: (dim: string | null) => void
   markDimensionEmpty: (dim: string) => void
   setStep1Summary: (dim: string, summary: string) => void
+  resetInterview: () => void
   reset: () => void
 }
 
 const initialState = {
   messages: [],
+  cvText: '',
+  cvAnalysis: '',
   interviewComplete: false,
   coveredDimensions: [],
   deferredDimensions: [],
@@ -76,6 +83,8 @@ export const useAppStore = create<AppStore>()(
           return { messages: msgs }
         }),
 
+      setCvText: (t) => set({ cvText: t }),
+      setCvAnalysis: (a) => set({ cvAnalysis: a }),
       setInterviewComplete: (v) => set({ interviewComplete: v }),
       setCoveredDimensions: (dims) => set((state) => ({
         coveredDimensions: Array.from(new Set([...state.coveredDimensions, ...dims])),
@@ -107,7 +116,24 @@ export const useAppStore = create<AppStore>()(
         step1Summaries: { ...state.step1Summaries, [dim]: summary },
       })),
 
-      reset: () => set(initialState),
+      resetInterview: () => set({
+    messages: [],
+    interviewComplete: false,
+    coveredDimensions: [],
+    deferredDimensions: [],
+    targetProgram: '',
+    personas: [],
+    selectedPersona: null,
+    essayType: 'SOP' as EssayType,
+    framework: [],
+    draft: '',
+    dimensionSummaries: {},
+    dimensionMessageIndex: {},
+    activeDimension: null,
+    emptyDimensions: [],
+    step1Summaries: {},
+  }),
+  reset: () => set(initialState),
     }),
     { name: 'essay-assistant-store' }
   )

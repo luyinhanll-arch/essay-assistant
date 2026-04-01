@@ -67,7 +67,7 @@ function findDimStartInHistory(dim: string, msgs: Message[]): number {
   // Fallback: keyword match + must contain a question mark (actual question, not a mention)
   const KEYWORD_MAP: Record<string, RegExp> = {
     academic:   /学习经历|本科|在校|GPA|专业课/i,
-    project:    /项目经历|做过.*项目|参与.*项目|课外.*活动/i,
+    project:    /项目经历|做过.*项目|参与.*项目|课外.*活动|大作业|课程设计/i,
     internship: /实习经历|实习.*过|在.*实习|工作.*经历/i,
     research:   /科研经历|做过.*科研|参与.*研究|实验室/i,
     motivation: /申请动机|为什么.*申请|为什么.*出国|申请.*原因/i,
@@ -273,6 +273,8 @@ export default function InterviewPage() {
     setDimensionSummary,
     setActiveDimension,
     markDimensionEmpty,
+    cvText,
+    cvAnalysis,
     reset,
   } = useAppStore()
 
@@ -288,6 +290,7 @@ export default function InterviewPage() {
 
   const messagesRef = useRef<Message[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
+  const userScrolledRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const recognitionRef = useRef<unknown>(null)
   const interimRef = useRef('')
@@ -298,9 +301,9 @@ export default function InterviewPage() {
 
   useEffect(() => { messagesRef.current = messages }, [messages])
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom (only when user hasn't manually scrolled up)
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && !userScrolledRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages, streamingText, interviewComplete])
@@ -344,6 +347,8 @@ export default function InterviewPage() {
           coveredDimensions: snap.coveredDimensions,
           deferredDimensions: snap.deferredDimensions,
           emptyDimensions:    snap.emptyDimensions,
+          cvText:             snap.cvText,
+          cvAnalysis:         snap.cvAnalysis,
         }),
       })
       if (!res.ok) {
@@ -455,8 +460,16 @@ export default function InterviewPage() {
           if (toForce.length > 0) s.setCoveredDimensions(toForce)
         }
 
-        const coveredSet = new Set(useAppStore.getState().coveredDimensions)
-        if (ALL_DIMENSIONS.every(d => coveredSet.has(d))) {
+        const s2 = useAppStore.getState()
+        const coveredSet = new Set(s2.coveredDimensions)
+        const allCovered = ALL_DIMENSIONS.every(d => coveredSet.has(d))
+        // CV users: complete if all non-exp dims covered + every exp dim is covered or empty
+        const NON_EXP = ['motivation', 'plan', 'personal']
+        const EXP = ['academic', 'project', 'internship', 'research']
+        const cvComplete = !!s2.cvText &&
+          NON_EXP.every(d => coveredSet.has(d)) &&
+          EXP.every(d => coveredSet.has(d) || s2.emptyDimensions.includes(d))
+        if (allCovered || cvComplete) {
           setInterviewComplete(true)
           generateAllSummaries(ALL_DIMENSIONS)
         }
@@ -531,7 +544,7 @@ export default function InterviewPage() {
       // the interview is objectively over — force-cover any remaining dims.
       {
         const s = useAppStore.getState()
-        const WRAP_UP = /接下来.*系统会|系统会.*提炼.*叙事|帮你提炼.*叙事方向|接下来可以去看看.*叙事方向/i
+        const WRAP_UP = /接下来.*系统会|系统会.*提炼.*叙事|帮你提炼.*叙事方向|接下来可以去看看.*叙事方向|祝你申请顺利|今天的访谈就到这里|信息非常充分/i
         const lastAI = [...msgs].reverse().find(m => m.role === 'assistant')
         const userReplies = msgs.filter(m => m.role === 'user').length
         if (lastAI && WRAP_UP.test(lastAI.rawContent ?? lastAI.content) && userReplies >= 8) {
@@ -639,10 +652,17 @@ export default function InterviewPage() {
       }
 
       // Send full conversation so the AI has all context to extract specific details
+      const { cvText: cv, cvAnalysis: cvA } = useAppStore.getState()
       const res = await fetch('/api/summarize-dimension', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dimension, messages: useAppStore.getState().messages, relatedSummaries }),
+        body: JSON.stringify({
+          dimension,
+          messages: useAppStore.getState().messages,
+          relatedSummaries,
+          cvText: cv || '',
+          cvAnalysis: cvA || '',
+        }),
       })
       
       if (!res.ok) {
@@ -745,7 +765,16 @@ export default function InterviewPage() {
         </header>
 
         {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-8 bg-[#FAF9F6]">
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto px-4 py-8 bg-[#FAF9F6]"
+          onScroll={() => {
+            const el = scrollRef.current
+            if (!el) return
+            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+            userScrolledRef.current = !atBottom
+          }}
+        >
           <div className="max-w-2xl mx-auto space-y-7">
             {displayMessages.map((m, i) => (
               <div
@@ -936,8 +965,8 @@ export default function InterviewPage() {
         <div className="flex-1 flex flex-col min-h-0">
           <div className="px-4 py-3 border-b border-stone-200 flex items-center justify-between">
             <div>
-              <p className="text-xs text-stone-500 font-medium">已了解的维度</p>
-              <p className="text-[10px] text-stone-400 mt-0.5">点击已了解的维度查看详情</p>
+              <p className="text-xs text-stone-500 font-medium">{cvText ? '访谈进度' : '已了解的维度'}</p>
+              <p className="text-[10px] text-stone-400 mt-0.5">{cvText ? '基于简历的深度访谈' : '点击已了解的维度查看详情'}</p>
             </div>
             <button
               onClick={handleRefreshDimensions}
@@ -949,7 +978,256 @@ export default function InterviewPage() {
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
-            {INTERVIEW_DIMENSIONS.map((dim) => {
+
+            {/* CV user: per-experience outline + non-exp dim summaries */}
+            {cvText && (() => {
+              // Parse cvAnalysis into entries
+              const entries: { name: string; reason: string }[] = []
+              let cur: { name: string; reason: string } | null = null
+              for (const raw of cvAnalysis.split('\n')) {
+                const line = raw.trim()
+                if (!line) continue
+                if (/^经历名称[：:]/.test(line)) {
+                  if (cur) entries.push(cur)
+                  cur = { name: line.replace(/^经历名称[：:]/, '').trim(), reason: '' }
+                } else if (/^深挖原因[：:]/.test(line) && cur) {
+                  cur.reason = line.replace(/^深挖原因[：:]/, '').trim()
+                } else if (cur && cur.reason) {
+                  cur.reason += ' ' + line
+                }
+              }
+              if (cur) entries.push(cur)
+
+              // Build a flat map: normalized section title -> { bullets, dimKey }
+              // from all exp dimension summaries (project/internship/research use # sections;
+              // academic is flat bullets under no header)
+              const EXP_SUM_DIMS = ['academic', 'project', 'internship', 'research']
+              type SecData = { bullets: string[]; dimKey: string }
+              const sectionMap = new Map<string, SecData>()
+
+              for (const dk of EXP_SUM_DIMS) {
+                const sumText = dimensionSummaries[dk]
+                if (!sumText) continue
+                if (dk === 'academic') {
+                  // Flat bullets — register under a sentinel key; matched via entry name fallback
+                  const bullets = sumText.split('\n').map(l => l.replace(/^[·•]\s*/, '').trim()).filter(Boolean)
+                  sectionMap.set('__academic__', { bullets, dimKey: dk })
+                } else {
+                  const lines = sumText.split('\n')
+                  let secTitle: string | null = null
+                  let secBullets: string[] = []
+                  for (const line of lines) {
+                    if (line.startsWith('# ')) {
+                      if (secTitle !== null) sectionMap.set(normStr(secTitle), { bullets: secBullets, dimKey: dk })
+                      secTitle = line.slice(2).trim()
+                      secBullets = []
+                    } else {
+                      const text = line.replace(/^[·•]\s*/, '').trim()
+                      if (text) secBullets.push(text)
+                    }
+                  }
+                  if (secTitle !== null) sectionMap.set(normStr(secTitle), { bullets: secBullets, dimKey: dk })
+                }
+              }
+
+              // Normalize: lowercase, strip spaces + common punctuation (quotes, brackets, etc.)
+              function normStr(s: string) {
+                return s.toLowerCase().replace(/[\s""''「」【】《》()（）\-_·•,，.。]/g, '')
+              }
+
+              // Find best matching section for an experience entry name
+              function findSection(name: string): SecData | null {
+                const norm = normStr(name)
+                // Exact
+                if (sectionMap.has(norm)) return sectionMap.get(norm)!
+                // Substring
+                for (const [key, data] of sectionMap) {
+                  if (key === '__academic__') continue
+                  if (norm.includes(key) || key.includes(norm)) return data
+                }
+                // Partial character overlap (≥ 60% of shorter string)
+                for (const [key, data] of sectionMap) {
+                  if (key === '__academic__') continue
+                  const shorter = norm.length < key.length ? norm : key
+                  const longer = norm.length < key.length ? key : norm
+                  let overlap = 0
+                  for (const ch of shorter) { if (longer.includes(ch)) overlap++ }
+                  if (shorter.length > 0 && overlap / shorter.length >= 0.6) return data
+                }
+                return null
+              }
+
+              const EXP_DIMS = ['academic', 'project', 'internship', 'research']
+              const NON_EXP_DIMS = INTERVIEW_DIMENSIONS.filter(d => !EXP_DIMS.includes(d.key))
+              const anyExpGenerating = EXP_DIMS.some(d => generatingSummaries[d])
+
+              return (
+                <>
+                  {/* Outline card — each entry expandable to show its AI summary */}
+                  <div className="bg-white border border-stone-200 rounded-lg overflow-hidden mb-1">
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-stone-100">
+                      <span className="text-[11px] font-semibold text-stone-600">深挖经历</span>
+                      <span className="text-[10px] text-stone-400">{entries.filter(e => findSection(e.name) !== null).length}/{entries.length} 经历已总结</span>
+                    </div>
+                    <div className="divide-y divide-stone-100">
+                      {entries.length > 0 ? entries.map((entry, i) => {
+                        const expKey = `exp_${i}`
+                        const isExpanded = expandedDimensions.has(expKey)
+                        const sec = findSection(entry.name)
+                        const hasSummary = !!sec && sec.bullets.length > 0
+
+                        return (
+                          <div key={i}>
+                            <div
+                              className={`flex gap-2 items-center px-3 py-2.5 ${hasSummary ? 'cursor-pointer hover:bg-stone-50' : ''}`}
+                              onClick={() => {
+                                if (!hasSummary) return
+                                setExpandedDimensions(prev => {
+                                  const next = new Set(prev)
+                                  isExpanded ? next.delete(expKey) : next.add(expKey)
+                                  return next
+                                })
+                              }}
+                            >
+                              {hasSummary ? (
+                                <span className="w-4 h-4 rounded-full bg-orange-500 text-white text-[9px] font-bold flex items-center justify-center shrink-0">✓</span>
+                              ) : anyExpGenerating ? (
+                                <span className="w-4 h-4 rounded-full bg-orange-100 text-orange-400 text-[9px] font-bold flex items-center justify-center shrink-0 animate-pulse">{i + 1}</span>
+                              ) : (
+                                <span className="w-4 h-4 rounded-full bg-stone-100 text-stone-300 text-[9px] font-bold flex items-center justify-center shrink-0">{i + 1}</span>
+                              )}
+                              <p className={`flex-1 text-[12px] leading-snug ${hasSummary ? 'text-stone-800 font-medium' : 'text-stone-400'}`}>{entry.name}</p>
+                              {hasSummary && (
+                                <span className={`text-[10px] text-stone-400 transition-transform inline-block shrink-0 ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
+                              )}
+                            </div>
+                            {isExpanded && (
+                              <div className="px-3 pb-2.5 pt-0 bg-stone-50 border-t border-stone-100">
+                                {anyExpGenerating && !hasSummary ? (
+                                  <div className="flex items-center gap-2 py-2">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-stone-300 animate-pulse shrink-0" />
+                                    <p className="text-[11px] text-stone-400">整理中…</p>
+                                  </div>
+                                ) : hasSummary ? (
+                                  <div className="space-y-1 pt-2">
+                                    {sec!.bullets.map((b, bi) => (
+                                      <div key={bi} className="flex gap-2 items-start">
+                                        <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0 mt-1.5" />
+                                        <p className="text-[11px] text-stone-500 leading-snug">{b.length > 45 ? b.slice(0, 45) + '…' : b}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="text-[11px] text-stone-300 italic pt-2">暂无记录</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      }) : (
+                        <p className="text-[11px] text-stone-300 italic px-3 py-2">访谈按简历大纲进行</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Non-exp dims: motivation / plan / personal with full summary */}
+                  {NON_EXP_DIMS.map((dim) => {
+                    const done = coveredDimensions.includes(dim.key)
+                    const isActive = !done && activeDimension === dim.key
+                    const isGenerating = generatingSummaries[dim.key]
+                    const aiSummary = dimensionSummaries[dim.key]
+                    const isExpanded = expandedDimensions.has(dim.key)
+                    const summaryIsEmpty = !isGenerating && aiSummary && /^无[。.]?$/.test(aiSummary.trim())
+                    const isEmpty = emptyDimensions.includes(dim.key) || !!summaryIsEmpty
+
+                    return (
+                      <div
+                        key={dim.key}
+                        className={`rounded-lg border transition-all ${
+                          done && !isEmpty
+                            ? isExpanded ? 'bg-white border-stone-200' : 'bg-white border-stone-200 cursor-pointer hover:border-stone-300'
+                            : done && isEmpty ? 'bg-stone-50 border-stone-200'
+                            : isActive ? 'bg-stone-50 border-stone-200'
+                            : 'border-stone-100'
+                        }`}
+                      >
+                        <div
+                          className={`flex items-center gap-2.5 px-3 py-2.5 ${done && !isEmpty ? 'cursor-pointer' : ''}`}
+                          onClick={() => {
+                            if (!done || isEmpty) return
+                            setExpandedDimensions(prev => {
+                              const next = new Set(prev)
+                              isExpanded ? next.delete(dim.key) : next.add(dim.key)
+                              return next
+                            })
+                          }}
+                        >
+                          <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 text-[9px] font-bold ${
+                            done && !isEmpty ? 'bg-stone-900 text-white'
+                            : done && isEmpty ? 'bg-stone-300 text-white'
+                            : isActive ? 'bg-stone-100 text-stone-600'
+                            : 'bg-stone-100 text-stone-300'
+                          }`}>
+                            {done && !isEmpty ? '✓' : done && isEmpty ? '—' : '·'}
+                          </span>
+                          <span className={`flex-1 text-[13px] ${
+                            done && !isEmpty ? 'text-stone-700 font-medium'
+                            : done && isEmpty ? 'text-stone-400 line-through decoration-stone-300'
+                            : isActive ? 'text-stone-700'
+                            : 'text-stone-300'
+                          }`}>{dim.label}</span>
+                          {done && !isEmpty && (
+                            isGenerating
+                              ? <span className="text-[10px] text-stone-400 animate-pulse">…</span>
+                              : <span className={`text-[10px] text-stone-400 transition-transform inline-block ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
+                          )}
+                          {done && isEmpty && <span className="text-[10px] text-stone-400 bg-stone-200 px-1.5 py-0.5 rounded-full font-medium">无</span>}
+                          {isActive && <span className="text-[10px] text-stone-500 animate-pulse">进行中</span>}
+                        </div>
+                        {done && !isEmpty && isExpanded && (
+                          <div className="px-3 pb-3 pt-0 border-t border-stone-100">
+                            {isGenerating ? (
+                              <div className="flex items-center gap-2 py-2">
+                                <div className="w-1.5 h-1.5 rounded-full bg-stone-300 animate-pulse shrink-0" />
+                                <p className="text-[11px] text-stone-400">整理中…</p>
+                              </div>
+                            ) : aiSummary ? (
+                              <div className="space-y-1 pt-2">
+                                {aiSummary.split('\n').map(l => l.replace(/^[·•]\s*/, '').trim()).filter(Boolean).map((b, bi) => (
+                                  <div key={bi} className="flex gap-2 items-start">
+                                    <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0 mt-1.5" />
+                                    <p className="text-[11px] text-stone-500 leading-snug">{b.length > 45 ? b.slice(0, 45) + '…' : b}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-[11px] text-stone-300 italic pt-2">暂无记录</p>
+                            )}
+                            {findDimStartInHistory(dim.key, messages) >= 0 && (
+                              <button
+                                className="mt-2 text-[10px] text-stone-400 hover:text-stone-600 transition-colors"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  const idx = findDimStartInHistory(dim.key, messages)
+                                  if (idx < 0) return
+                                  const el = document.getElementById(`msg-${idx}`)
+                                  el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                }}
+                              >
+                                定位到对话 ↑
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </>
+              )
+            })()}
+
+            {/* No-CV user: original 7-dim cards */}
+            {!cvText && INTERVIEW_DIMENSIONS.map((dim) => {
               const done = coveredDimensions.includes(dim.key)
               const isActive = !done && activeDimension === dim.key
               const isGenerating = generatingSummaries[dim.key]
@@ -1114,18 +1392,6 @@ export default function InterviewPage() {
             })}
           </div>
         </div>
-
-        {/* CTA — only show the "early exit" button before interview completes */}
-        {!interviewComplete && coveredDimensions.length >= 5 && (
-          <div className="p-3 border-t border-stone-200 shrink-0">
-            <button
-              onClick={() => router.push('/highlights')}
-              className="w-full bg-stone-100 hover:bg-stone-200 border border-stone-200 text-stone-500 font-medium text-sm py-2.5 rounded-lg transition-colors"
-            >
-              已收集足够信息，去选人设 →
-            </button>
-          </div>
-        )}
 
       </aside>
     </div>

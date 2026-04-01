@@ -53,7 +53,7 @@ function EditorContent() {
   const isGenerating = searchParams.get('generating') === '1'
 
   const router = useRouter()
-  const { messages, framework, draft, essayType, targetProgram, setDraft } = useAppStore()
+  const { messages, framework, draft, essayType, targetProgram, step1Summaries, setDraft } = useAppStore()
 
   const [text, setText] = useState(draft)
   const [reviseInput, setReviseInput] = useState('')
@@ -119,14 +119,11 @@ function EditorContent() {
 
   async function generateDraft() {
     setGenerating(true)
-    const transcript = messages
-      .map((m) => `${m.role === 'user' ? 'Applicant' : 'Advisor'}: ${m.content}`)
-      .join('\n\n')
     try {
       const res = await fetch('/api/draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transcript, framework, essayType, targetProgram }),
+        body: JSON.stringify({ summaries: step1Summaries, framework, essayType, targetProgram }),
       })
       if (!res.ok) throw new Error('生成失败')
       const reader = res.body!.getReader()
