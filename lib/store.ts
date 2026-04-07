@@ -15,6 +15,7 @@ interface AppStore {
   personas: Persona[]           // AI生成的2-3个候选人设方向
   selectedPersona: Persona | null  // 用户选中的人设方向
   essayType: EssayType
+  wordLimit: string
   framework: FrameworkSection[]
   draft: string
   dimensionSummaries: Record<string, string>      // 维度key -> AI总结
@@ -35,11 +36,13 @@ interface AppStore {
   setPersonas: (p: Persona[]) => void
   setSelectedPersona: (p: Persona | null) => void
   setEssayType: (t: EssayType) => void
+  setWordLimit: (w: string) => void
   setFramework: (f: FrameworkSection[]) => void
   setDraft: (d: string) => void
   setDimensionSummary: (dimension: string, summary: string) => void
   setActiveDimension: (dim: string | null) => void
   markDimensionEmpty: (dim: string) => void
+  removeFromEmpty: (dim: string) => void
   setStep1Summary: (dim: string, summary: string) => void
   resetInterview: () => void
   reset: () => void
@@ -56,6 +59,7 @@ const initialState = {
   personas: [],
   selectedPersona: null,
   essayType: 'SOP' as EssayType,
+  wordLimit: '',
   framework: [],
   draft: '',
   dimensionSummaries: {},
@@ -99,6 +103,7 @@ export const useAppStore = create<AppStore>()(
       setPersonas: (p) => set({ personas: p }),
       setSelectedPersona: (p) => set({ selectedPersona: p }),
       setEssayType: (t) => set({ essayType: t }),
+      setWordLimit: (w) => set({ wordLimit: w }),
       setFramework: (f) => set({ framework: f }),
       setDraft: (d) => set({ draft: d }),
       setDimensionSummary: (dimension, summary) =>
@@ -111,6 +116,9 @@ export const useAppStore = create<AppStore>()(
       setActiveDimension: (dim) => set({ activeDimension: dim }),
       markDimensionEmpty: (dim) => set((state) => ({
         emptyDimensions: Array.from(new Set([...state.emptyDimensions, dim])),
+      })),
+      removeFromEmpty: (dim) => set((state) => ({
+        emptyDimensions: state.emptyDimensions.filter(d => d !== dim),
       })),
       setStep1Summary: (dim, summary) => set((state) => ({
         step1Summaries: { ...state.step1Summaries, [dim]: summary },

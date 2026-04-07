@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAppStore } from '@/lib/store'
+import { getUserToken } from '@/lib/supabase'
 
 function WordCount({ text }: { text: string }) {
   const words = text.trim() ? text.trim().split(/\s+/).length : 0
@@ -21,8 +22,11 @@ function parseEnSents(text: string): SentToken[][] {
   const paras = text.split(/\n\n+/).filter(p => p.trim())
   let idx = 0
   return paras.map(para => {
-    const matches = para.match(/[^.!?]+[.!?]+["\u201d]?(?=\s|$)|[^.!?]+$/g) ?? [para]
-    return matches.map(s => s.trim()).filter(Boolean).map(t => ({ idx: idx++, text: t }))
+    // Protect decimal points (e.g. 3.8/4.0, 0.5) so they aren't treated as sentence terminators
+    const protected_ = para.replace(/(\d)\.(\d)/g, '$1\u00B7$2')
+    const raw = protected_.match(/[^.!?]+[.!?]+["\u201d]?(?=\s|$)|[^.!?]+$/g) ?? [protected_]
+    const matches = raw.map(s => s.replace(/\u00B7/g, '.'))
+    return matches.map(s => s.trim()).filter(Boolean).filter(t => !/^\d+[%]?[.,]?$/.test(t)).map(t => ({ idx: idx++, text: t }))
   })
 }
 
@@ -30,9 +34,24 @@ function parseZhSents(text: string): SentToken[][] {
   const paras = text.split(/\n\n+/).filter(p => p.trim())
   let idx = 0
   return paras.map(para => {
-    const matches = para.match(/[^。！？；…]+[。！？；…]+|[^。！？；…]+$/g) ?? [para]
+    const matches = para.match(/[^。！？]+[。！？]+|[^。！？]+$/g) ?? [para]
     return matches.map(s => s.trim()).filter(Boolean).map(t => ({ idx: idx++, text: t }))
   })
+}
+
+/** Map EN sentence at position enPos (within paragraph) to proportional ZH sentence position */
+function enToZhPos(enPos: number, enCount: number, zhCount: number): number {
+  if (zhCount === 0) return 0
+  return Math.min(Math.round(enPos * zhCount / enCount), zhCount - 1)
+}
+
+/** Return the set of EN sentence positions that map to the given ZH position */
+function zhToEnPositions(zhPos: number, enCount: number, zhCount: number): Set<number> {
+  const s = new Set<number>()
+  for (let i = 0; i < enCount; i++) {
+    if (enToZhPos(i, enCount, zhCount) === zhPos) s.add(i)
+  }
+  return s
 }
 
 // Reconstruct full text from parsed sentence paragraphs
@@ -53,27 +72,146 @@ function EditorContent() {
   const isGenerating = searchParams.get('generating') === '1'
 
   const router = useRouter()
-  const { messages, framework, draft, essayType, targetProgram, step1Summaries, setDraft } = useAppStore()
+  const { messages, framework, draft, essayType, wordLimit, targetProgram, step1Summaries, setDraft } = useAppStore()
 
   const [text, setText] = useState(draft)
   const [reviseInput, setReviseInput] = useState('')
   const [isRevising, setIsRevising] = useState(false)
+  const [reviseParagraphIdx, setReviseParagraphIdx] = useState<number | null>(null)
   const [generating, setGenerating] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [exportOpen, setExportOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveSuccess, setSaveSuccess] = useState(false)
   const generatedRef = useRef(false)
 
   // Bilingual state
   const [showZh, setShowZh] = useState(false)
   const [zhText, setZhText] = useState('')
   const [isTranslating, setIsTranslating] = useState(false)
-  const [zhStale, setZhStale] = useState(false)
+  const [zhPanelWidth, setZhPanelWidth] = useState(320)
+  const zhDragRef = useRef<{ startX: number; startW: number } | null>(null)
 
-  // Hover highlight
-  const [hoveredSent, setHoveredSent] = useState<number | null>(null)
+  // Inline quote-revise state
+  const [quoteText, setQuoteText] = useState('')
+  const [quoteRange, setQuoteRange] = useState<{ start: number; end: number } | null>(null)
+  const reviseInputRef = useRef<HTMLInputElement>(null)
+  const justQuotedRef = useRef(false)
+
+  function handleTextareaMouseUp(e: React.MouseEvent<HTMLTextAreaElement>) {
+    const ta = e.currentTarget
+    const start = ta.selectionStart
+    const end = ta.selectionEnd
+    if (start === end) return
+    const selected = text.slice(start, end)
+    if (!selected.trim()) return
+    setQuoteText(selected)
+    setQuoteRange({ start, end })
+    setReviseInput('')
+    setTimeout(() => reviseInputRef.current?.focus(), 30)
+  }
+
+  function handleSentViewMouseUp() {
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed) return
+    const selected = selection.toString().trim()
+    if (!selected) return
+    setQuoteText(selected)
+    setQuoteRange(null) // will use indexOf to reconstruct
+    setReviseInput('')
+    selection.removeAllRanges()
+    justQuotedRef.current = true
+    setTimeout(() => reviseInputRef.current?.focus(), 30)
+  }
+
+  async function handleQuoteRevise() {
+    if (!quoteText || !reviseInput.trim() || isRevising) return
+    setIsRevising(true)
+    try {
+      const res = await fetch('/api/revise', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draft: quoteText, instruction: reviseInput, quoteMode: true }),
+      })
+      if (!res.ok) throw new Error('修改失败')
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let revised = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        revised += decoder.decode(value, { stream: true })
+      }
+      const r = revised.trim()
+      const newText = quoteRange
+        ? text.slice(0, quoteRange.start) + r + text.slice(quoteRange.end)
+        : text.replace(quoteText, r)
+      setText(newText)
+      setDraft(newText)
+      setQuoteText('')
+      setQuoteRange(null)
+      setReviseInput('')
+
+      // Partial ZH update: re-translate only affected paragraphs
+      if (showZh && zhText) {
+        const origParas = text.split(/\n\n+/)
+        const qStart = quoteRange ? quoteRange.start : text.indexOf(quoteText)
+        const qEnd = quoteRange ? quoteRange.end : qStart + quoteText.length
+        let charPos = 0
+        const affectedIdxs: number[] = []
+        for (let i = 0; i < origParas.length; i++) {
+          const pEnd = charPos + origParas[i].length
+          if (pEnd > qStart && charPos < qEnd) affectedIdxs.push(i)
+          charPos += origParas[i].length + 2
+        }
+        if (affectedIdxs.length > 0) {
+          const newParas = newText.split(/\n\n+/)
+          const zhParas = zhText.split(/\n\n+/)
+          await Promise.all(affectedIdxs.map(async (idx) => {
+            if (!newParas[idx]) return
+            try {
+              const tr = await fetch('/api/translate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: newParas[idx] }),
+              })
+              if (tr.ok) {
+                const data = await tr.json()
+                if (data.translation?.trim()) zhParas[idx] = data.translation.trim()
+              }
+            } catch {}
+          }))
+          setZhText(zhParas.join('\n\n'))
+        }
+      }
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setIsRevising(false)
+    }
+  }
+
+  function onZhPanelDragStart(e: React.MouseEvent) {
+    zhDragRef.current = { startX: e.clientX, startW: zhPanelWidth }
+    function onMove(ev: MouseEvent) {
+      if (!zhDragRef.current) return
+      const delta = zhDragRef.current.startX - ev.clientX
+      setZhPanelWidth(Math.max(200, Math.min(600, zhDragRef.current.startW + delta)))
+    }
+    function onUp() {
+      zhDragRef.current = null
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  // Hover highlight — sentence-level with proportional cross-side mapping
+  const [hoveredSent, setHoveredSent] = useState<{ para: number; side: 'en' | 'zh'; pos: number } | null>(null)
   // English edit mode toggle (bilingual view only)
-  const [editingMode, setEditingMode] = useState(false)
+
 
   // Per-paragraph revision animation
   const [animatingParas, setAnimatingParas] = useState<Set<number>>(new Set())
@@ -85,9 +223,15 @@ function EditorContent() {
   const [editingZhValue, setEditingZhValue] = useState('')
   // Which English sentence index is being updated after a zh edit (show pulse)
   const [updatingEnIdx, setUpdatingEnIdx] = useState<number | null>(null)
+  // Which ZH sentence idx is being updated after an EN edit (show pulse)
+  const [updatingZhIdx, setUpdatingZhIdx] = useState<number | null>(null)
   const editZhRef = useRef<HTMLTextAreaElement>(null)
-  // Prevent double-commit: textarea unmount fires blur → would call commitZhEdit twice
-  const committingRef = useRef(false)
+
+  // Inline English sentence editing
+  const [editingEnIdx, setEditingEnIdx] = useState<number | null>(null)
+  const [editingEnValue, setEditingEnValue] = useState('')
+  const editEnRef = useRef<HTMLTextAreaElement>(null)
+  const committingEnRef = useRef(false)
 
   // Focus cursor at end only when a new sentence is opened for editing
   useEffect(() => {
@@ -98,10 +242,18 @@ function EditorContent() {
     }
   }, [editingZhIdx])
 
+  useEffect(() => {
+    if (editingEnIdx !== null && editEnRef.current) {
+      editEnRef.current.focus()
+      const len = editEnRef.current.value.length
+      editEnRef.current.setSelectionRange(len, len)
+    }
+  }, [editingEnIdx])
+
   const enSentParas = parseEnSents(text)
   const zhSentParas = parseZhSents(zhText)
 
-  const showSentView = showZh && !editingMode && !generating
+  const showSentView = showZh && !generating
 
   useEffect(() => {
     if (messages.length === 0) { router.replace('/interview'); return }
@@ -123,7 +275,7 @@ function EditorContent() {
       const res = await fetch('/api/draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ summaries: step1Summaries, framework, essayType, targetProgram }),
+        body: JSON.stringify({ summaries: step1Summaries, framework, essayType, targetProgram, wordLimit }),
       })
       if (!res.ok) throw new Error('生成失败')
       const reader = res.body!.getReader()
@@ -147,7 +299,7 @@ function EditorContent() {
   async function translate(sourceText: string) {
     if (!sourceText.trim()) return
     setIsTranslating(true)
-    setZhStale(false)
+
     try {
       const res = await fetch('/api/translate', {
         method: 'POST',
@@ -167,19 +319,77 @@ function EditorContent() {
   function handleToggleZh() {
     const next = !showZh
     setShowZh(next)
-    setEditingMode(false)
+
     setHoveredSent(null)
     setEditingZhIdx(null)
     if (next && !zhText && text) translate(text)
   }
 
+  function detectTargetParagraph(instruction: string, paragraphs: string[]): number | null {
+    const numMap: Record<string, number> = {
+      '一': 0, '1': 0, '二': 1, '2': 1, '三': 2, '3': 2,
+      '四': 3, '4': 3, '五': 4, '5': 4, '六': 5, '6': 5,
+      '七': 6, '7': 6, '八': 7, '8': 7,
+    }
+    const match = instruction.match(/第\s*([一二三四五六七八1-8])\s*(?:个\s*)?(?:段落?|部分)/)
+    if (!match) return null
+    const idx = numMap[match[1]]
+    if (idx === undefined || idx >= paragraphs.length) return null
+    return idx
+  }
+
   async function handleRevise() {
     const instruction = reviseInput.trim()
     if (!instruction || isRevising) return
+
+    const paragraphs = text.split(/\n\n+/).filter(p => p.trim())
+    const paraIdx = detectTargetParagraph(instruction, paragraphs)
+
     setIsRevising(true)
     setShowParaView(false)
     setAnimatingParas(new Set())
     prevTextRef.current = text
+
+    if (paraIdx !== null) {
+      // Paragraph-specific revision: only rewrite the target paragraph
+      setReviseParagraphIdx(paraIdx)
+      try {
+        const res = await fetch('/api/revise', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ draft: paragraphs[paraIdx], instruction, paragraphMode: true }),
+        })
+        if (!res.ok) throw new Error('修改失败')
+        const reader = res.body!.getReader()
+        const decoder = new TextDecoder()
+        let streamedPara = ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          streamedPara += decoder.decode(value, { stream: true })
+          const newParas = [...paragraphs]
+          newParas[paraIdx] = streamedPara
+          setText(newParas.join('\n\n'))
+        }
+        const finalParas = [...paragraphs]
+        finalParas[paraIdx] = streamedPara
+        const finalText = finalParas.join('\n\n')
+        setDraft(finalText)
+        setReviseInput('')
+        if (showZh) translate(finalText)
+        setAnimatingParas(new Set([paraIdx]))
+        setShowParaView(true)
+        setTimeout(() => { setShowParaView(false); setAnimatingParas(new Set()) }, 2500)
+      } catch (err) {
+        console.error(err)
+      } finally {
+        setIsRevising(false)
+        setReviseParagraphIdx(null)
+      }
+      return
+    }
+
+    // Full-essay revision
     try {
       const res = await fetch('/api/revise', {
         method: 'POST',
@@ -198,8 +408,7 @@ function EditorContent() {
       }
       setDraft(fullText)
       setReviseInput('')
-      if (showZh) setZhStale(true)
-      // Diff paragraphs to find which ones changed
+      if (showZh) translate(fullText)
       const oldParas = prevTextRef.current.split(/\n\n+/).filter(p => p.trim())
       const newParas = fullText.split(/\n\n+/).filter(p => p.trim())
       const changed = new Set<number>()
@@ -209,10 +418,7 @@ function EditorContent() {
       if (changed.size > 0 && changed.size < newParas.length) {
         setAnimatingParas(changed)
         setShowParaView(true)
-        setTimeout(() => {
-          setShowParaView(false)
-          setAnimatingParas(new Set())
-        }, 2500)
+        setTimeout(() => { setShowParaView(false); setAnimatingParas(new Set()) }, 2500)
       }
     } catch (err) {
       console.error(err)
@@ -249,6 +455,119 @@ function EditorContent() {
     setCopied(true)
     setExportOpen(false)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  async function handleSave() {
+    if (!text || saving) return
+    setSaving(true)
+    try {
+      // Parse school/program/degree from targetProgram ("School | Program | Degree")
+      const parts = targetProgram.split('|').map(s => s.trim())
+      const school = parts[0] || '未命名学校'
+      const program = parts[1] || null
+      const degree = parts[2] || null
+      const token = getUserToken()
+      const res = await fetch('/api/essays', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, school, program, degree, en_text: text, zh_text: zhText || null }),
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        throw new Error(errData.error || '保存失败')
+      }
+      setSaveSuccess(true)
+      setTimeout(() => setSaveSuccess(false), 2500)
+    } catch (err) {
+      console.error(err)
+      alert('保存失败：' + (err instanceof Error ? err.message : String(err)))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function startEditEn(sent: SentToken) {
+    setEditingEnIdx(sent.idx)
+    setEditingEnValue(sent.text)
+    setHoveredSent(null)
+  }
+
+  async function commitEnEdit() {
+    if (editingEnIdx === null || committingEnRef.current) return
+    committingEnRef.current = true
+    const rawValue = editEnRef.current ? editEnRef.current.value : editingEnValue
+    const newSent = rawValue.trim()
+    const savedEnIdx = editingEnIdx
+
+    // Snapshot paragraph structure before async ops
+    const currentEnParas = enSentParas
+    const currentZhParas = zhSentParas
+
+    const newEnParas = currentEnParas.map(para =>
+      para.map(s => s.idx === savedEnIdx ? { ...s, text: newSent } : s)
+    )
+    const newFull = rejoinText(newEnParas, ' ')
+    setText(newFull)
+    setDraft(newFull)
+    setEditingEnIdx(null)
+    setEditingEnValue('')
+    committingEnRef.current = false
+
+    // Auto-update corresponding Chinese sentence
+    if (showZh && currentZhParas.length > 0) {
+      // Find which paragraph and position this EN sentence belongs to
+      let paraIdx = -1, posInPara = -1
+      for (let i = 0; i < currentEnParas.length; i++) {
+        const pos = currentEnParas[i].findIndex(s => s.idx === savedEnIdx)
+        if (pos !== -1) { paraIdx = i; posInPara = pos; break }
+      }
+      if (paraIdx !== -1 && currentZhParas[paraIdx]) {
+        const zhCount = currentZhParas[paraIdx].length
+        const enCount = currentEnParas[paraIdx].length
+        const zhPos = enToZhPos(posInPara, enCount, zhCount)
+        // End of the ZH range owned by this EN sentence (exclusive)
+        const zhPosEnd = posInPara + 1 < enCount
+          ? enToZhPos(posInPara + 1, enCount, zhCount)
+          : zhCount
+        const targetZhSent = currentZhParas[paraIdx][zhPos]
+        if (targetZhSent) {
+          if (!newSent) {
+            // Sentence deleted — remove the entire corresponding ZH range
+            const newZhParas = currentZhParas.map((para, pi) => {
+              if (pi !== paraIdx) return para
+              return [...para.slice(0, zhPos), ...para.slice(zhPosEnd)]
+            })
+            setZhText(rejoinText(newZhParas, ''))
+          } else {
+            // Sentence edited — translate to Chinese, replacing the whole ZH range
+            setUpdatingZhIdx(targetZhSent.idx)
+            try {
+              const res = await fetch('/api/translate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: newSent, direction: 'en-zh' }),
+              })
+              if (res.ok) {
+                const data = await res.json()
+                const newZhSent = data.translation?.trim()
+                if (newZhSent) {
+                  const newZhParas = currentZhParas.map((para, pi) => {
+                    if (pi !== paraIdx) return para
+                    const replacement = { idx: targetZhSent.idx, text: newZhSent }
+                    return [...para.slice(0, zhPos), replacement, ...para.slice(zhPosEnd)]
+                  })
+                  setZhText(rejoinText(newZhParas, ''))
+                }
+              }
+            } catch (err) {
+              console.error(err)
+            } finally {
+              setUpdatingZhIdx(null)
+            }
+          }
+        }
+      }
+    }
   }
 
   function startEditZh(sent: SentToken) {
@@ -331,6 +650,16 @@ function EditorContent() {
         <div className="flex items-center gap-3">
           <WordCount text={text} />
           <button
+            onClick={handleSave}
+            disabled={!text || generating || saving}
+            className="text-sm px-4 py-2 rounded-lg transition-colors border bg-orange-400 hover:bg-orange-500 text-white border-orange-400 disabled:opacity-40"
+          >
+            {saveSuccess ? '已保存 ✓' : saving ? '保存中…' : '保存文书'}
+          </button>
+          <Link href="/essays" className="text-sm px-4 py-2 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-600 border border-stone-200 transition-colors">
+            我的文书
+          </Link>
+          <button
             onClick={handleToggleZh}
             disabled={generating}
             className={`text-sm px-4 py-2 rounded-lg transition-colors border ${
@@ -404,20 +733,6 @@ function EditorContent() {
 
             {/* English side */}
             <div className="flex flex-col flex-1 overflow-hidden relative">
-              {showZh && !generating && (
-                <div className="absolute top-3 right-3 z-10">
-                  <button
-                    onClick={() => { setEditingMode(m => !m); setHoveredSent(null) }}
-                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                      editingMode
-                        ? 'bg-stone-900 text-white border-stone-900'
-                        : 'bg-white text-stone-500 border-stone-200 hover:border-stone-300 hover:text-stone-700'
-                    }`}
-                  >
-                    {editingMode ? '✓ 完成编辑' : '✏ 编辑'}
-                  </button>
-                </div>
-              )}
 
               {generating ? (
                 <div className="flex-1 flex flex-col items-center justify-center">
@@ -426,24 +741,53 @@ function EditorContent() {
                   <p className="text-stone-400 text-sm mt-1">约需 15-30 秒</p>
                 </div>
               ) : showSentView ? (
-                <div className="flex-1 overflow-y-auto px-8 py-8 font-essay text-[15px] text-stone-800">
+                <div
+                  className="flex-1 overflow-y-auto px-8 py-8 font-essay text-[15px] text-stone-800"
+                  onMouseUp={handleSentViewMouseUp}
+                  onClick={() => {
+                    if (justQuotedRef.current) { justQuotedRef.current = false; return }
+                    if (quoteText) { setQuoteText(''); setQuoteRange(null) }
+                  }}
+                >
                   {enSentParas.length > 0 ? enSentParas.map((sents, pi) => (
                     <p key={pi} className="mb-5">
-                      {sents.map(sent => (
-                        <span
-                          key={sent.idx}
-                          className={`rounded px-0.5 py-0.5 transition-colors cursor-default ${
-                            updatingEnIdx === sent.idx
-                              ? 'bg-stone-200 animate-pulse'
-                              : hoveredSent === sent.idx
-                              ? 'bg-stone-100 text-stone-900'
-                              : 'hover:bg-stone-100'
-                          }`}
-                          onMouseEnter={() => editingZhIdx === null && setHoveredSent(sent.idx)}
-                          onMouseLeave={() => setHoveredSent(null)}
-                        >
-                          {sent.text}{' '}
-                        </span>
+                      {sents.map((sent, enPos) => (
+                        editingEnIdx === sent.idx ? (
+                          <textarea
+                            key={sent.idx}
+                            ref={editEnRef}
+                            value={editingEnValue}
+                            onChange={e => setEditingEnValue(e.target.value)}
+                            onBlur={commitEnEdit}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEnEdit() }
+                              if (e.key === 'Escape') { setEditingEnIdx(null); setEditingEnValue('') }
+                            }}
+                            rows={2}
+                            className="w-full rounded-lg px-2 py-1.5 text-[15px] leading-relaxed bg-stone-100 border border-stone-400 text-stone-900 resize-none focus:outline-none focus:border-stone-600 font-essay"
+                          />
+                        ) : (
+                          <span
+                            key={sent.idx}
+                            className={`rounded px-0.5 py-0.5 transition-colors ${
+                              updatingEnIdx === sent.idx
+                                ? 'bg-stone-200 animate-pulse'
+                                : quoteText && (quoteText.includes(sent.text.trim()) || sent.text.trim().includes(quoteText.trim()))
+                                ? 'bg-amber-100 text-stone-900 ring-1 ring-amber-300'
+                                : hoveredSent !== null && hoveredSent.para === pi && (
+                                    (hoveredSent.side === 'en' && hoveredSent.pos === enPos) ||
+                                    (hoveredSent.side === 'zh' && zhToEnPositions(hoveredSent.pos, sents.length, zhSentParas[pi]?.length ?? 1).has(enPos))
+                                  )
+                                ? 'bg-stone-200 text-stone-900'
+                                : 'cursor-text hover:bg-stone-100'
+                            }`}
+                            onMouseEnter={() => editingZhIdx === null && setHoveredSent({ para: pi, side: 'en', pos: enPos })}
+                            onMouseLeave={() => setHoveredSent(null)}
+                            onClick={() => startEditEn(sent)}
+                          >
+                            {sent.text}{' '}
+                          </span>
+                        )
                       ))}
                     </p>
                   )) : (
@@ -461,7 +805,7 @@ function EditorContent() {
                     const streamParas = text.split(/\n\n+/).filter(p => p.trim())
                     return origParas.map((orig, i) => {
                       const streamed = streamParas[i]
-                      const isStreaming = isRevising && i === streamParas.length - 1
+                      const isStreaming = isRevising && (reviseParagraphIdx !== null ? i === reviseParagraphIdx : i === streamParas.length - 1)
                       const hasChanged = streamed !== undefined && streamed !== orig
                       const paraText = (hasChanged || isStreaming) && streamed ? streamed : orig
                       const cls = showParaView && animatingParas.has(i)
@@ -483,8 +827,8 @@ function EditorContent() {
                   onChange={(e) => {
                     setText(e.target.value)
                     setDraft(e.target.value)
-                    if (showZh) setZhStale(true)
                   }}
+                  onMouseUp={handleTextareaMouseUp}
                   placeholder="你的文书将在这里生成..."
                   className="flex-1 bg-transparent text-stone-800 text-[15px] p-8 resize-none focus:outline-none placeholder-stone-300 font-essay"
                   style={{ lineHeight: '1.85' }}
@@ -494,23 +838,16 @@ function EditorContent() {
 
             {/* Chinese translation panel */}
             {showZh && (
-              <div className="w-80 border-l border-stone-200 bg-stone-50 flex flex-col overflow-hidden shrink-0">
+              <div
+                className="cursor-col-resize w-1.5 shrink-0 bg-stone-200 hover:bg-stone-400 active:bg-stone-500 transition-colors select-none"
+                onMouseDown={onZhPanelDragStart}
+              />
+            )}
+            {showZh && (
+              <div className="border-stone-200 bg-stone-50 flex flex-col overflow-hidden shrink-0" style={{ width: zhPanelWidth }}>
                 <div className="px-4 py-3 border-b border-stone-200 flex items-center justify-between shrink-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-stone-700">中文译文</span>
-                    {zhStale && (
-                      <span className="text-xs bg-yellow-100 text-yellow-700 border border-yellow-300 rounded px-2 py-0.5">
-                        ⚠ 译文已过期
-                      </span>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => translate(text)}
-                    disabled={isTranslating || !text}
-                    className="text-xs text-stone-500 hover:text-stone-800 disabled:opacity-40 transition-colors"
-                  >
-                    {isTranslating ? '翻译中...' : '重新翻译'}
-                  </button>
+                  <span className="text-sm font-semibold text-stone-700">中文译文</span>
+                  {isTranslating && <span className="text-xs text-stone-400">翻译中...</span>}
                 </div>
                 <div className="flex-1 overflow-y-auto p-5">
                   {isTranslating ? (
@@ -523,7 +860,7 @@ function EditorContent() {
                       <p className="text-xs text-stone-400 mb-4">点击句子可直接编辑，英文同步更新</p>
                       {zhSentParas.map((sents, pi) => (
                         <p key={pi} className="mb-5">
-                          {sents.map(sent => (
+                          {sents.map((sent, zhPos) => (
                             editingZhIdx === sent.idx ? (
                               /* Inline edit textarea */
                               <textarea
@@ -545,11 +882,16 @@ function EditorContent() {
                                 key={sent.idx}
                                 title="点击编辑"
                                 className={`rounded px-0.5 py-0.5 text-sm leading-relaxed transition-colors cursor-text ${
-                                  hoveredSent === sent.idx
+                                  updatingZhIdx === sent.idx
+                                    ? 'bg-stone-200 animate-pulse'
+                                    : hoveredSent !== null && hoveredSent.para === pi && (
+                                        (hoveredSent.side === 'zh' && hoveredSent.pos === zhPos) ||
+                                        (hoveredSent.side === 'en' && enToZhPos(hoveredSent.pos, enSentParas[pi]?.length ?? 1, sents.length) === zhPos)
+                                      )
                                     ? 'bg-stone-200 text-stone-900'
-                                    : 'text-stone-700 hover:bg-stone-100'
+                                    : 'text-stone-700 hover:bg-stone-200'
                                 }`}
-                                onMouseEnter={() => editingZhIdx === null && setHoveredSent(sent.idx)}
+                                onMouseEnter={() => editingZhIdx === null && setHoveredSent({ para: pi, side: 'zh', pos: zhPos })}
                                 onMouseLeave={() => setHoveredSent(null)}
                                 onClick={() => startEditZh(sent)}
                               >
@@ -561,7 +903,7 @@ function EditorContent() {
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-stone-400 text-center mt-8">点击"重新翻译"生成译文</p>
+                    <p className="text-sm text-stone-400 text-center mt-8">译文将在此显示</p>
                   )}
                 </div>
               </div>
@@ -569,19 +911,34 @@ function EditorContent() {
           </div>
 
           {/* Revise bar */}
-          <div className="border-t border-stone-200 px-6 py-4 shrink-0 bg-stone-50">
+          <div className="border-t border-stone-200 px-4 pt-3 pb-4 shrink-0 bg-stone-50">
+            {quoteText && (
+              <div className="flex items-center gap-2 mb-2 px-1">
+                <div className="flex items-center gap-2 bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-xs text-stone-600 flex-1 min-w-0">
+                  <span className="w-0.5 h-3.5 bg-stone-400 rounded-full shrink-0" />
+                  <span className="truncate">{quoteText.trim().slice(0, 100)}{quoteText.trim().length > 100 ? '…' : ''}</span>
+                </div>
+                <button
+                  onClick={() => { setQuoteText(''); setQuoteRange(null) }}
+                  className="text-stone-400 hover:text-stone-600 text-xs shrink-0"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             <div className="flex gap-3 items-center">
               <div className="w-7 h-7 rounded-lg bg-stone-900 flex items-center justify-center text-sm shrink-0 text-white">✦</div>
               <input
+                ref={reviseInputRef}
                 value={reviseInput}
                 onChange={(e) => setReviseInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleRevise()}
-                placeholder="输入修改指令（例如：开篇改得更有冲击力；第三段加强技术细节）"
+                onKeyDown={(e) => e.key === 'Enter' && (quoteText ? handleQuoteRevise() : handleRevise())}
+                placeholder={quoteText ? '如何修改这句话？' : '输入修改指令（例如：开篇改得更有冲击力；第三段加强技术细节）'}
                 disabled={isRevising || generating}
                 className="flex-1 bg-white border border-stone-200 rounded-xl px-4 py-2.5 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:border-stone-400 disabled:opacity-50 transition-colors"
               />
               <button
-                onClick={handleRevise}
+                onClick={quoteText ? handleQuoteRevise : handleRevise}
                 disabled={isRevising || generating || !reviseInput.trim()}
                 className="bg-stone-900 hover:bg-stone-800 disabled:opacity-40 text-white text-sm px-4 py-2.5 rounded-xl font-medium transition-all"
               >

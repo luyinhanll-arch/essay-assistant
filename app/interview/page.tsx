@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAppStore } from '@/lib/store'
@@ -17,9 +17,12 @@ import { Mascot } from '@/components/Mascot'
 function recoverMissedTagsFromHistory(msgs: Message[]): string[] {
   const store = useAppStore.getState()
   const covered: string[] = []
-  const empty: string[] = []
+  // Track per-dim: { emptyIdx, askingIdx } to resolve ASKING overriding EMPTY
+  const emptyAt: Record<string, number> = {}   // dim → message index where [EMPTY:dim] appeared
+  const askingAt: Record<string, number> = {}  // dim → message index where [ASKING:dim] appeared
 
-  for (const msg of msgs) {
+  for (let i = 0; i < msgs.length; i++) {
+    const msg = msgs[i]
     if (msg.role !== 'assistant') continue
     const c = msg.rawContent ?? msg.content  // rawContent preserves [COVERED:] / [EMPTY:] tags
     const covMatches = [...c.matchAll(/\[COVERED[：:]\s*([^\]]+)\]/gi)]
@@ -31,16 +34,33 @@ function recoverMissedTagsFromHistory(msgs: Message[]): string[] {
     const emtMatches = [...c.matchAll(/\[EMPTY[：:]\s*([^\]]+)\]/gi)]
     emtMatches.forEach(m =>
       m[1].split(',').map(s => s.trim()).filter(Boolean).forEach(d => {
-        if (!empty.includes(d)) empty.push(d)
+        if (!(d in emptyAt)) emptyAt[d] = i  // record first occurrence
       })
     )
+    const askMatches = [...c.matchAll(/\[ASKING[：:]\s*([^\]]+)\]/gi)]
+    askMatches.forEach(m => {
+      const d = m[1].trim()
+      if (d && !(d in askingAt)) askingAt[d] = i
+    })
   }
+
+  // A dim is truly empty only if [EMPTY:dim] was NOT followed by a later [ASKING:dim]
+  // (which would mean the AI reconsidered and started asking about it anyway)
+  const empty = Object.keys(emptyAt).filter(d =>
+    !(d in askingAt) || askingAt[d] <= emptyAt[d]
+  )
 
   const nowCovered = store.coveredDimensions
   const newCovered = covered.filter(d => !nowCovered.includes(d))
   if (newCovered.length > 0) store.setCoveredDimensions(newCovered)
 
   const nowEmpty = store.emptyDimensions
+  // Also remove dims from emptyDimensions if [ASKING:dim] came after [EMPTY:dim]
+  const overridden = store.emptyDimensions.filter(d =>
+    d in askingAt && d in emptyAt && askingAt[d] > emptyAt[d]
+  )
+  if (overridden.length > 0) overridden.forEach(d => store.removeFromEmpty(d))
+
   const newEmpty = empty.filter(d => !nowEmpty.includes(d))
   if (newEmpty.length > 0) {
     newEmpty.forEach(d => store.markDimensionEmpty(d))
@@ -57,12 +77,20 @@ function recoverMissedTagsFromHistory(msgs: Message[]): string[] {
  * which filters out intro mentions like "我们待会儿会聊到实习经历".
  */
 function findDimStartInHistory(dim: string, msgs: Message[]): number {
+  // Minimum prior user turns required before a dimension's first question
+  // (prevents early intro/transition messages from being matched by mistake)
+  const MIN_USER_TURNS: Record<string, number> = { motivation: 4, plan: 5, personal: 6 }
+  const minTurns = MIN_USER_TURNS[dim] ?? 0
+
   // Primary: explicit [ASKING:dim] marker
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i]
     if (m.role !== 'assistant') continue
     const raw = (m as Message & { rawContent?: string }).rawContent ?? m.content
-    if (new RegExp(`\\[ASKING[：:]\\s*${dim}\\]`, 'i').test(raw)) return i
+    if (!new RegExp(`\\[ASKING[：:]\\s*${dim}\\]`, 'i').test(raw)) continue
+    const priorUserTurns = msgs.slice(0, i).filter(x => x.role === 'user').length
+    if (priorUserTurns < minTurns) continue
+    return i
   }
   // Fallback: keyword match + must contain a question mark (actual question, not a mention)
   const KEYWORD_MAP: Record<string, RegExp> = {
@@ -70,9 +98,9 @@ function findDimStartInHistory(dim: string, msgs: Message[]): number {
     project:    /项目经历|做过.*项目|参与.*项目|课外.*活动|大作业|课程设计/i,
     internship: /实习经历|实习.*过|在.*实习|工作.*经历/i,
     research:   /科研经历|做过.*科研|参与.*研究|实验室/i,
-    motivation: /申请动机|为什么.*申请|为什么.*出国|申请.*原因/i,
-    plan:       /未来规划|职业规划|未来.*规划|毕业[后之]|毕业.*[想计打发]|职业.*目标|未来.*打算|未来.*方向|以后.*[想打]|将来.*[想打]|长期.*目标|短期.*计划|希望.*发展|领域.*发展|发展方向|设想.*方向/i,
-    personal:   /个人特质|你.*特质|特别擅长|你.*擅长|让你成长|你.*成长|印象深刻|你.*特点|你自己有没有|你有没有.*感觉/i,
+    motivation: /申请动机|为什么.*申请|为什么.*出国|申请.*原因|什么.*吸引|感兴趣.*原因|让你.*感兴趣|对.*项目.*感兴趣|为什么.*香港|香港.*吸引|什么让你.*选择|想来.*读|选择.*申请/i,
+    plan:       /未来规划|职业规划|未来.*规划|毕业后.*[想希打做]|毕业.*打算|职业.*目标|职业.*方向|未来.*打算|以后.*[想打]|将来.*[想打]|长期.*目标|短期.*计划/i,
+    personal:   /个人特质|你.*是.*怎样的人|说说你这个人|关于你自己|你自己.*有这种感觉|让你.*突破.*瓶颈|成长最多|对.*自己有了.*认识|你这个人|你.*核心.*特质/i,
   }
   const kw = KEYWORD_MAP[dim]
   if (!kw) return -1
@@ -88,7 +116,54 @@ function findDimStartInHistory(dim: string, msgs: Message[]): number {
     // Transition messages mention at most 1-2 other dims ("X聊完了，来聊Y"), which is fine.
     const otherDimCount = OTHER_DIM_PATTERNS.filter(re => re.test(m.content)).length
     if (otherDimCount >= 3) continue
+    // For late-stage dims, skip matches that appear too early in the conversation.
+    const priorUserTurns = msgs.slice(0, i).filter(x => x.role === 'user').length
+    if (priorUserTurns < minTurns) continue
     return i
+  }
+  return -1
+}
+
+/**
+ * Find the index of the first AI message that asks about a specific CV experience by name.
+ * Matches when the message contains the experience name (≥60% char overlap) AND a question mark.
+ */
+function findExpStartInHistory(expName: string, msgs: Message[]): number {
+  const norm = (s: string) => s.toLowerCase().replace(/[\s""''「」【】《》()（）\-_·•,，.。：:]/g, '')
+  // Try multiple variants: full name, part before colon, each part, and 4-char substrings of long names
+  const variants: string[] = []
+  const parts = expName.split(/[：:]/)
+  parts.forEach(p => { const n = norm(p); if (n.length >= 2) variants.push(n) })
+  const fullNorm = norm(expName)
+  if (!variants.includes(fullNorm)) variants.unshift(fullNorm)
+  // For long names (>6 chars), also try sliding 4-char windows as additional candidates
+  if (fullNorm.length > 6) {
+    for (let s = 0; s <= fullNorm.length - 4; s++) {
+      const sub = fullNorm.slice(s, s + 4)
+      if (!variants.includes(sub)) variants.push(sub)
+    }
+  }
+
+  if (variants.every(v => !v)) return -1
+
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]
+    if (m.role !== 'assistant') continue
+    if (!/[？?]/.test(m.content)) continue
+    const normContent = norm(m.content)
+    for (const candidate of variants) {
+      if (!candidate) continue
+      // Direct substring match
+      if (normContent.includes(candidate)) return i
+      // Prefix match (first 70% of candidate) — only for longer candidates to avoid false matches
+      if (candidate.length >= 6 && normContent.includes(candidate.slice(0, Math.ceil(candidate.length * 0.7)))) return i
+      // Character overlap (≥55% of candidate chars appear in content) — lowered from 65%
+      if (candidate.length >= 4) {
+        let overlap = 0
+        for (const ch of candidate) { if (normContent.includes(ch)) overlap++ }
+        if (overlap / candidate.length >= 0.55) return i
+      }
+    }
   }
   return -1
 }
@@ -120,9 +195,11 @@ async function detectCoverageWithAI(msgs: Message[]) {
     if (data.coveredDimensions?.length > 0) {
       const nowCovered = useAppStore.getState().coveredDimensions
       // For strict dims (research/motivation/plan/personal):
-      // - conf >= 0.6 AND [ASKING:dim] marker present → AI explicitly opened the topic
-      // - conf >= 0.80 without marker → high-confidence window analysis result
-      //   (genuine coverage: 0.75–0.90; false-positive from passing mention: 0.3–0.65)
+      // Strict dims (research/motivation/plan/personal) require BOTH:
+      // - [ASKING:dim] marker present (AI explicitly opened the topic), AND
+      // - conf >= 0.6 from window analysis
+      // This prevents false positives when keywords appear in early transition
+      // messages before the AI actually starts asking about the dimension.
       const STRICT_DIMS = new Set(['research', 'motivation', 'plan', 'personal'])
       const dimMap: Record<string, number> = {}
       if (Array.isArray(data.dimensions)) {
@@ -135,7 +212,7 @@ async function detectCoverageWithAI(msgs: Message[]) {
         if (nowCovered.includes(d)) return false
         if (STRICT_DIMS.has(d)) {
           const conf = dimMap[d] ?? 0
-          return conf >= 0.80 || (conf >= 0.6 && hasAskingMarker(d))
+          return conf >= 0.6 && hasAskingMarker(d)
         }
         return true
       })
@@ -223,7 +300,9 @@ function parseAIMessage(raw: string): {
 
   const targetMatch = clean.match(/\[TARGET[：:]\s*([^\]]*)\]/)
   if (targetMatch) {
-    target = targetMatch[1].trim()
+    const candidate = targetMatch[1].trim()
+    // Require at least one '|' — guarantees school|program format; rejects single-field outputs like [TARGET:商业分析]
+    if (candidate.includes('|')) target = candidate
     clean = clean.replace(/\[TARGET[：:][^\]]*\]/g, '').trim()
   }
   const coveredMatches = [...clean.matchAll(/\[COVERED[：:]\s*([^\]]*)\]/g)]
@@ -273,6 +352,7 @@ export default function InterviewPage() {
     setDimensionSummary,
     setActiveDimension,
     markDimensionEmpty,
+    removeFromEmpty,
     cvText,
     cvAnalysis,
     reset,
@@ -281,9 +361,7 @@ export default function InterviewPage() {
   const [isThinking, setIsThinking] = useState(false)
   const [streamingText, setStreamingText] = useState('')
   const [textInput, setTextInput] = useState('')
-  const [isListening, setIsListening] = useState(false)
-  const [interimText, setInterimText] = useState('')
-  const [hasVoiceSupport, setHasVoiceSupport] = useState(false)
+
   const [generatingSummaries, setGeneratingSummaries] = useState<Record<string, boolean>>({})
   const [expandedDimensions, setExpandedDimensions] = useState<Set<string>>(new Set())
   const [isRefreshingDimensions, setIsRefreshingDimensions] = useState(false)
@@ -292,9 +370,7 @@ export default function InterviewPage() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const userScrolledRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const recognitionRef = useRef<unknown>(null)
-  const interimRef = useRef('')
-  const isCancelledRef = useRef(false)
+
   const initialized = useRef(false)
   // 记录每个维度上次生成摘要时的消息数，用于判断是否需要中途重新生成
   const summaryGeneratedAtRef = useRef<Record<string, number>>({})
@@ -308,12 +384,6 @@ export default function InterviewPage() {
     }
   }, [messages, streamingText, interviewComplete])
 
-  useEffect(() => {
-    const supported =
-      typeof window !== 'undefined' &&
-      ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
-    setHasVoiceSupport(supported)
-  }, [])
 
   useEffect(() => {
     if (initialized.current) return
@@ -388,16 +458,74 @@ export default function InterviewPage() {
         setCoveredDimensions(covered)
       }
 
+      // ── Cascade re-generation for earlier exp dims ────────────────────────────
+      // Experiences mentioned during a later dim (e.g. 公益活动 surfacing during
+      // internship probing) are missed by the earlier dim's summary because that
+      // summary was generated before those messages existed. Whenever internship or
+      // research is newly covered/empty, re-generate all already-resolved exp dims
+      // that come before it so their summaries include any newly-surfaced content.
+      {
+        const EXP_ORDER = ['project', 'internship', 'research'] as const
+        const newlyResolved = [...covered, ...empty].filter(d => EXP_DIMS.includes(d))
+        if (newlyResolved.length > 0) {
+          const minIdx = Math.min(...newlyResolved.map(d => EXP_ORDER.indexOf(d as typeof EXP_ORDER[number])))
+          const sSnap = useAppStore.getState()
+          const toRefresh = EXP_ORDER.slice(0, minIdx).filter(d =>
+            sSnap.coveredDimensions.includes(d) || sSnap.emptyDimensions.includes(d)
+          )
+          // Re-generate in order so relatedSummaries chain stays correct
+          ;(async () => {
+            for (const d of toRefresh) {
+              await generateDimensionSummary(d)
+            }
+          })()
+        }
+      }
+
       // ── Personal covered → unconditionally resolve motivation + plan ────────
       // personal is the last dimension; once it's done the interview is over.
       // motivation/plan must have been discussed in some form — force-cover any
       // that are still missing so the completion flow can proceed.
+      // Guard: only apply if there are ≥6 prior user turns, which means the
+      // interview is genuinely late-stage. If personal is wrongly marked early
+      // (AI bug), this prevents premature force-covering of motivation/plan.
       {
         const s = useAppStore.getState()
+        const priorUserTurns = msgs.filter(m => m.role === 'user').length
         const personalDone = covered.includes('personal') || s.coveredDimensions.includes('personal')
-        if (personalDone) {
+        if (personalDone && priorUserTurns >= 6) {
           const toForce = ['motivation', 'plan'].filter(d => !s.coveredDimensions.includes(d))
           if (toForce.length > 0) s.setCoveredDimensions(toForce)
+        }
+      }
+
+      // ── Keyword-based activeDimension inference (fallback when AI omits [ASKING:dim]) ──
+      // If the AI didn't output [ASKING:dim] but its message clearly asks about a new
+      // dimension, inject the inferred dim so downstream NO_EXP_PATTERN / transition
+      // logic stays accurate.
+      if (asking.length === 0) {
+        const DIM_ORDER = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+        const INFER_KW: Record<string, RegExp> = {
+          internship: /实习经历|有没有.*实习|聊聊.*实习|兼职/,
+          research:   /科研|实验室|课题组|帮.*老师.*研究|发表|投稿/,
+          motivation: /申请动机|为什么.*申请|为什么.*出国|什么.*吸引.*你|选择.*这个.*方向|为什么.*选择/,
+          plan:       /毕业后.*[想希打做]|未来.*规划|职业.*目标|长期.*打算|毕业.*之后/,
+          personal:   /个人特质|你.*核心.*特质|让你.*突破.*瓶颈|成长最多|你自己.*有这种感觉|你这个人/,
+        }
+        const sInfer = useAppStore.getState()
+        const curActive = sInfer.activeDimension
+        const curIdx = curActive ? DIM_ORDER.indexOf(curActive) : -1
+        for (const [dim, kw] of Object.entries(INFER_KW)) {
+          const dimIdx = DIM_ORDER.indexOf(dim)
+          // Only infer dims strictly after current active (no backwards jumps),
+          // EXCEPT motivation — AI sometimes asks it out of order (after plan).
+          if (dimIdx <= curIdx && dim !== 'motivation') continue
+          // Must contain keyword AND a question mark (AI is actually asking, not just mentioning)
+          if (kw.test(fullText) && /[？?]/.test(fullText) &&
+              !sInfer.coveredDimensions.includes(dim) && !sInfer.emptyDimensions.includes(dim)) {
+            asking.push(dim)
+            break
+          }
         }
       }
 
@@ -405,9 +533,40 @@ export default function InterviewPage() {
       deferred.forEach(dim => deferDimension(dim))
       if (asking.length > 0) {
         const prevDim = useAppStore.getState().activeDimension
-        if (prevDim && useAppStore.getState().coveredDimensions.includes(prevDim)) {
+        const s = useAppStore.getState()
+        if (prevDim && s.coveredDimensions.includes(prevDim)) {
           generateDimensionSummary(prevDim)
+        } else if (prevDim && !s.coveredDimensions.includes(prevDim) && !s.emptyDimensions.includes(prevDim)) {
+          // AI transitioned away without outputting [COVERED:prevDim].
+          // Auto-recover: if the AI asked about prevDim AND the user replied with
+          // substantial content (>8 chars), treat it as covered.
+          const TRANSITION_KW: Record<string, RegExp> = {
+            academic:   /本科|专业|成绩|gpa|绩点|排名|毕业论文|毕设/i,
+            project:    /项目|大作业|课程设计|比赛|竞赛|个人项目/i,
+            internship: /实习|兼职|工作经历/i,
+            research:   /科研|实验室|帮.*老师|课题|发表/i,
+            motivation: /申请动机|为什么.*申请|为什么.*出国|感兴趣.*原因|吸引|选择.*方向/i,
+            plan:       /毕业后|未来规划|职业.*方向|长期.*目标/i,
+            personal:   /个人特质|你.*核心.*特质|让你.*突破.*瓶颈|成长最多|你自己.*有这种感觉/i,
+          }
+          const kw = TRANSITION_KW[prevDim]
+          const allMsgs = [...msgs, { role: 'assistant' as const, content: fullText }]
+          if (kw) {
+            const aiAsked = allMsgs.some((m, i) =>
+              m.role === 'assistant' && kw.test(m.rawContent ?? m.content) &&
+              allMsgs.slice(i + 1).some(u => u.role === 'user' && u.content.trim().length > 8)
+            )
+            if (aiAsked) {
+              setCoveredDimensions([prevDim])
+              generateDimensionSummary(prevDim)
+            }
+          }
         }
+        // If this dimension was previously mis-marked as empty, undo it — the AI
+        // is explicitly asking about it, so it must have content.
+        asking.forEach(d => {
+          if (useAppStore.getState().emptyDimensions.includes(d)) removeFromEmpty(d)
+        })
         setActiveDimension(asking[0])
       }
 
@@ -469,9 +628,12 @@ export default function InterviewPage() {
         const cvComplete = !!s2.cvText &&
           NON_EXP.every(d => coveredSet.has(d)) &&
           EXP.every(d => coveredSet.has(d) || s2.emptyDimensions.includes(d))
-        if (allCovered || cvComplete) {
+        // Require at least 8 user turns before declaring the interview complete,
+        // matching the prompt's rule. Prevents premature completion when the AI
+        // outputs [INTERVIEW_COMPLETE] too early (e.g. after a short "没有" chain).
+        const userTurnCount = msgsWithResponse.filter(m => m.role === 'user').length
+        if ((allCovered || cvComplete) && userTurnCount >= 8) {
           setInterviewComplete(true)
-          generateAllSummaries(ALL_DIMENSIONS)
         }
         // If still not all covered: background detectCoverageWithAI will fill gaps;
         // the useEffect below triggers completion once all dims are detected.
@@ -492,6 +654,13 @@ export default function InterviewPage() {
     }
     const userMsg: Message = { role: 'user', content: text.trim() }
     addMessage(userMsg)
+
+    // Do NOT eagerly mark internship/research as empty here — wait for the AI to
+    // output [EMPTY:dim] explicitly. If we mark empty immediately when the user says
+    // "没有", we hit a contradiction when the AI follows up and the user reveals they
+    // DO have relevant experiences (e.g. TA, volunteer work,横向课题). The AI's
+    // [EMPTY:dim] tag is the authoritative signal, parsed in callAI → parseAIMessage.
+
     await callAI([...messagesRef.current, userMsg])
   }
 
@@ -509,8 +678,8 @@ export default function InterviewPage() {
       // treat the dim as covered. This is the last-resort for dims where the AI
       // forgot both [ASKING:] and [COVERED:] markers.
       const QUESTION_KW: Record<string, RegExp> = {
-        motivation: /为什么.*申请|为什么.*出国|申请.*动机|什么.*促使|驱动你|想来.*读|想出来/i,
-        plan:       /毕业.*想|未来.*打算|职业.*目标|未来规划|毕业后|长期.*目标|短期.*计划/i,
+        motivation: /为什么.*申请|为什么.*出国|申请.*动机|什么.*促使|驱动你|想来.*读|想出来|什么.*吸引|感兴趣.*原因|让你.*感兴趣|对.*项目.*感兴趣|为什么.*香港|香港.*吸引|什么让你.*选择|选择.*申请/i,
+        plan:       /未来规划|职业规划|毕业后.*[想希打做]|毕业.*打算|职业.*目标|职业.*方向|未来.*打算|长期.*目标|短期.*计划/i,
         personal:   /印象深刻|让你成长|成长.*经历|改变.*想法|你.*特点|自我.*认知|你.*是.*怎样.*人/i,
         research:   /有没有.*科研|做过.*科研|参与.*研究|加入.*实验室|帮.*老师.*课题/i,
       }
@@ -561,69 +730,7 @@ export default function InterviewPage() {
     }
   }
 
-  function handleSkip() {
-    const dim = useAppStore.getState().activeDimension
-    if (!dim || isThinking) return
-    markDimensionEmpty(dim)
-    setCoveredDimensions([dim])
-    // Let AI continue with updated state (next missing dim will be first in list)
-    callAI(messagesRef.current)
-  }
 
-  // Voice
-  const startListening = useCallback(() => {
-    if (isThinking || isListening) return
-    isCancelledRef.current = false
-    setInterimText('')
-    interimRef.current = ''
-    setIsListening(true)
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) return
-
-    const recognition = new SR()
-    recognition.lang = 'zh-CN'
-    recognition.continuous = false
-    recognition.interimResults = true
-    recognitionRef.current = recognition
-
-    recognition.onresult = (event: { resultIndex: number; results: { [key: number]: { isFinal: boolean; [key: number]: { transcript: string } } } }) => {
-      let text = ''
-      for (let i = event.resultIndex; i < (event.results as unknown as unknown[]).length; i++) {
-        text += event.results[i][0].transcript
-      }
-      interimRef.current = text
-      setInterimText(text)
-    }
-
-    recognition.onend = () => {
-      const text = interimRef.current
-      interimRef.current = ''
-      setInterimText('')
-      setIsListening(false)
-      if (!isCancelledRef.current && text.trim()) {
-        handleSend(text.trim())
-      }
-    }
-
-    recognition.onerror = () => {
-      setIsListening(false)
-      setInterimText('')
-    }
-
-    recognition.start()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isThinking, isListening])
-
-  function handleMicClick() {
-    if (isListening) {
-      isCancelledRef.current = true
-      ;(recognitionRef.current as { stop: () => void } | null)?.stop()
-    } else {
-      startListening()
-    }
-  }
 
 
   const EXP_DIMS = ['project', 'internship', 'research']
@@ -704,18 +811,59 @@ export default function InterviewPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coveredDimensions, dimensionSummaries, generatingSummaries])
 
-  // Auto-complete when all dimensions become covered via background detection
+  // Auto-complete when all dimensions become covered/empty via background detection
   // (handles the case where AI prematurely emits [INTERVIEW_COMPLETE] before
   //  all dims are tagged, then background AI detection fills in the gaps)
   useEffect(() => {
     if (interviewComplete) return
     const ALL_DIMENSIONS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
-    if (ALL_DIMENSIONS.every(d => coveredDimensions.includes(d))) {
-      setInterviewComplete(true)
-      generateAllSummaries(ALL_DIMENSIONS)
+    const msgs = messagesRef.current
+    const userTurns = msgs.filter(m => m.role === 'user').length
+    if (userTurns < 8) return
+
+    const s = useAppStore.getState()
+    const coveredSet = new Set(s.coveredDimensions)
+    const empty = [...s.emptyDimensions]
+
+    const src = (m: { rawContent?: string; content: string }) => m.rawContent ?? m.content
+    const lastMsg = msgs[msgs.length - 1]
+    const lastContent = lastMsg ? src(lastMsg) : ''
+    // AI has concluded when last message is from AI and ends without a question mark
+    const aiHasConcluded = lastMsg?.role === 'assistant' && !/[？?]/.test(lastContent.slice(-400))
+
+    if (aiHasConcluded) {
+      // Force-cover/empty all dims that were asked + user replied, but AI forgot the tag
+      const toForceCover: string[] = []
+      const toForceEmpty: string[] = []
+
+      // Fallback: if activeDimension is still set and AI has concluded, force-cover it
+      const activeDim = s.activeDimension
+      if (activeDim && !coveredSet.has(activeDim) && !empty.includes(activeDim)) {
+        toForceCover.push(activeDim)
+        coveredSet.add(activeDim)
+      }
+
+      for (const d of ALL_DIMENSIONS) {
+        if (coveredSet.has(d) || empty.includes(d)) continue
+        const askIdx = msgs.reduce((found, m, i) =>
+          m.role === 'assistant' && new RegExp(`\\[ASKING[：:]\\s*${d}\\]`, 'i').test(src(m)) ? i : found, -1)
+        if (askIdx === -1) continue
+        const afterAsk = msgs.slice(askIdx + 1)
+        const userReplies = afterAsk.filter(m => m.role === 'user')
+        if (userReplies.length === 0) continue
+        // If ALL user replies to this dim are very short negatives, mark empty; otherwise covered
+        const allNegative = userReplies.every(m => /^(没有|没|无|也没有|都没有|没做过|没有过|不|没有呢|没有啊)$/.test(m.content.trim()))
+        if (allNegative) toForceEmpty.push(d)
+        else toForceCover.push(d)
+      }
+      if (toForceCover.length > 0) { s.setCoveredDimensions(toForceCover); toForceCover.forEach(d => coveredSet.add(d)) }
+      if (toForceEmpty.length > 0) { toForceEmpty.forEach(d => { s.markDimensionEmpty(d); empty.push(d) }) }
     }
+
+    const allDone = ALL_DIMENSIONS.every(d => coveredSet.has(d) || empty.includes(d))
+    if (allDone) setInterviewComplete(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions])
+  }, [coveredDimensions, emptyDimensions, messages.length])
   
   const roundCount = messages.filter((m) => m.role === 'user').length
   // Render messages - for the last assistant message during streaming, show streamingText
@@ -846,22 +994,21 @@ export default function InterviewPage() {
         {/* Input area */}
         <div className="shrink-0 bg-[#FAF9F6] px-4 pb-5 pt-3">
           <div className="max-w-2xl mx-auto">
-            {/* Skip current topic */}
-            {activeDimension && !interviewComplete && !isThinking && (
-              <div className="flex justify-end mb-2">
+            {/* Skip / rephrase buttons */}
+            {!interviewComplete && !isThinking && messages.some(m => m.role === 'assistant') && (
+              <div className="flex justify-end gap-3 mb-2">
                 <button
-                  onClick={handleSkip}
+                  onClick={() => handleSend('这个问题我不太清楚怎么回答，你能换个方式问我吗？')}
                   className="text-[11px] text-stone-400 hover:text-stone-600 transition-colors"
                 >
-                  跳过此话题 →
+                  换个方式问
                 </button>
-              </div>
-            )}
-            {/* Voice interim text */}
-            {isListening && (
-              <div className="mb-2 px-4 py-2 bg-white border border-stone-200 rounded-xl text-sm text-stone-600">
-                <span className="text-red-400 mr-2">●</span>
-                {interimText || <span className="text-stone-400 italic">正在聆听…</span>}
+                <button
+                  onClick={() => handleSend('这个问题我答不上来，跳过这道题，但继续聊这段经历吧。')}
+                  className="text-[11px] text-stone-400 hover:text-stone-600 transition-colors"
+                >
+                  跳过此问题
+                </button>
               </div>
             )}
             <div className="flex gap-2 items-end bg-white border border-stone-200 rounded-2xl px-3 py-2 shadow-sm focus-within:border-stone-300 transition-colors">
@@ -880,29 +1027,15 @@ export default function InterviewPage() {
                   }
                 }}
                 placeholder="回复 Omi…"
-                disabled={isThinking || isListening}
+                disabled={isThinking}
                 rows={1}
                 className="flex-1 bg-transparent text-sm text-stone-800 placeholder-stone-400 resize-none focus:outline-none disabled:opacity-50 py-1.5 px-1"
                 style={{ minHeight: '36px', maxHeight: '160px' }}
               />
               <div className="flex items-center gap-1.5 shrink-0 pb-1">
-                {hasVoiceSupport && (
-                  <button
-                    onClick={handleMicClick}
-                    disabled={isThinking}
-                    title={isListening ? '停止录音' : '语音输入'}
-                    className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all disabled:opacity-40 ${
-                      isListening
-                        ? 'bg-red-500 text-white scale-105'
-                        : 'text-stone-400 hover:text-stone-600 hover:bg-stone-100'
-                    }`}
-                  >
-                    {isListening ? '⏹' : '🎙️'}
-                  </button>
-                )}
                 <button
                   onClick={() => handleSend(textInput)}
-                  disabled={isThinking || isListening || !textInput.trim()}
+                  disabled={isThinking || !textInput.trim()}
                   className="w-9 h-9 rounded-xl bg-stone-500 hover:bg-stone-600 disabled:opacity-30 text-white flex items-center justify-center transition-colors shrink-0"
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -997,6 +1130,15 @@ export default function InterviewPage() {
                 }
               }
               if (cur) entries.push(cur)
+
+              // Sort by interview order: entries discussed earlier appear first
+              entries.sort((a, b) => {
+                const ia = findExpStartInHistory(a.name, messages)
+                const ib = findExpStartInHistory(b.name, messages)
+                const ea = ia < 0 ? Infinity : ia
+                const eb = ib < 0 ? Infinity : ib
+                return ea - eb
+              })
 
               // Build a flat map: normalized section title -> { bullets, dimKey }
               // from all exp dimension summaries (project/internship/research use # sections;
@@ -1113,13 +1255,28 @@ export default function InterviewPage() {
                                     {sec!.bullets.map((b, bi) => (
                                       <div key={bi} className="flex gap-2 items-start">
                                         <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0 mt-1.5" />
-                                        <p className="text-[11px] text-stone-500 leading-snug">{b.length > 45 ? b.slice(0, 45) + '…' : b}</p>
+                                        <p className="text-[11px] text-stone-500 leading-snug">{b}</p>
                                       </div>
                                     ))}
                                   </div>
                                 ) : (
                                   <p className="text-[11px] text-stone-300 italic pt-2">暂无记录</p>
                                 )}
+                                {(() => {
+                                  const idx = findExpStartInHistory(entry.name, messages)
+                                  if (idx < 0) return null
+                                  return (
+                                    <button
+                                      className="mt-2 text-[10px] text-stone-400 hover:text-stone-600 transition-colors"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        document.getElementById(`msg-${idx}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                      }}
+                                    >
+                                      定位到对话 ↑
+                                    </button>
+                                  )
+                                })()}
                               </div>
                             )}
                           </div>
@@ -1139,22 +1296,23 @@ export default function InterviewPage() {
                     const isExpanded = expandedDimensions.has(dim.key)
                     const summaryIsEmpty = !isGenerating && aiSummary && /^无[。.]?$/.test(aiSummary.trim())
                     const isEmpty = emptyDimensions.includes(dim.key) || !!summaryIsEmpty
+                    const resolved = done || isEmpty
 
                     return (
                       <div
                         key={dim.key}
                         className={`rounded-lg border transition-all ${
-                          done && !isEmpty
+                          resolved && !isEmpty
                             ? isExpanded ? 'bg-white border-stone-200' : 'bg-white border-stone-200 cursor-pointer hover:border-stone-300'
-                            : done && isEmpty ? 'bg-stone-50 border-stone-200'
+                            : resolved && isEmpty ? 'bg-stone-50 border-stone-200'
                             : isActive ? 'bg-stone-50 border-stone-200'
                             : 'border-stone-100'
                         }`}
                       >
                         <div
-                          className={`flex items-center gap-2.5 px-3 py-2.5 ${done && !isEmpty ? 'cursor-pointer' : ''}`}
+                          className={`flex items-center gap-2.5 px-3 py-2.5 ${resolved && !isEmpty ? 'cursor-pointer' : ''}`}
                           onClick={() => {
-                            if (!done || isEmpty) return
+                            if (!resolved || isEmpty) return
                             setExpandedDimensions(prev => {
                               const next = new Set(prev)
                               isExpanded ? next.delete(dim.key) : next.add(dim.key)
@@ -1163,28 +1321,28 @@ export default function InterviewPage() {
                           }}
                         >
                           <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 text-[9px] font-bold ${
-                            done && !isEmpty ? 'bg-stone-900 text-white'
-                            : done && isEmpty ? 'bg-stone-300 text-white'
+                            resolved && !isEmpty ? 'bg-stone-900 text-white'
+                            : resolved && isEmpty ? 'bg-stone-300 text-white'
                             : isActive ? 'bg-stone-100 text-stone-600'
                             : 'bg-stone-100 text-stone-300'
                           }`}>
-                            {done && !isEmpty ? '✓' : done && isEmpty ? '—' : '·'}
+                            {resolved && !isEmpty ? '✓' : resolved && isEmpty ? '—' : '·'}
                           </span>
                           <span className={`flex-1 text-[13px] ${
-                            done && !isEmpty ? 'text-stone-700 font-medium'
-                            : done && isEmpty ? 'text-stone-400 line-through decoration-stone-300'
+                            resolved && !isEmpty ? 'text-stone-700 font-medium'
+                            : resolved && isEmpty ? 'text-stone-400 line-through decoration-stone-300'
                             : isActive ? 'text-stone-700'
                             : 'text-stone-300'
                           }`}>{dim.label}</span>
-                          {done && !isEmpty && (
+                          {resolved && !isEmpty && (
                             isGenerating
                               ? <span className="text-[10px] text-stone-400 animate-pulse">…</span>
                               : <span className={`text-[10px] text-stone-400 transition-transform inline-block ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
                           )}
-                          {done && isEmpty && <span className="text-[10px] text-stone-400 bg-stone-200 px-1.5 py-0.5 rounded-full font-medium">无</span>}
+                          {resolved && isEmpty && <span className="text-[10px] text-stone-400 bg-stone-200 px-1.5 py-0.5 rounded-full font-medium">无</span>}
                           {isActive && <span className="text-[10px] text-stone-500 animate-pulse">进行中</span>}
                         </div>
-                        {done && !isEmpty && isExpanded && (
+                        {resolved && !isEmpty && isExpanded && (
                           <div className="px-3 pb-3 pt-0 border-t border-stone-100">
                             {isGenerating ? (
                               <div className="flex items-center gap-2 py-2">
@@ -1236,16 +1394,18 @@ export default function InterviewPage() {
               // Treat as empty if [EMPTY:dim] was emitted, OR if the generated summary is just "无"
               const summaryIsEmpty = !isGenerating && aiSummary && /^无[。.]?$/.test(aiSummary.trim())
               const isEmpty = emptyDimensions.includes(dim.key) || !!summaryIsEmpty
+              // A dim is "resolved" if it's covered OR confirmed empty
+              const resolved = done || isEmpty
 
               return (
                 <div
                   key={dim.key}
                   className={`rounded-lg border transition-all ${
-                    done && !isEmpty
+                    resolved && !isEmpty
                       ? isExpanded
                         ? 'bg-white border-stone-200'
                         : 'bg-white border-stone-200 cursor-pointer hover:border-stone-300'
-                      : done && isEmpty
+                      : resolved && isEmpty
                         ? 'bg-stone-50 border-stone-200'
                       : isActive
                         ? 'bg-stone-50 border-stone-200'
@@ -1254,9 +1414,9 @@ export default function InterviewPage() {
                 >
                   {/* Card header */}
                   <div
-                    className={`flex items-center gap-2.5 px-3 py-2.5 ${done && !isEmpty ? 'cursor-pointer' : ''}`}
+                    className={`flex items-center gap-2.5 px-3 py-2.5 ${resolved && !isEmpty ? 'cursor-pointer' : ''}`}
                     onClick={() => {
-                      if (!done || isEmpty) return
+                      if (!resolved || isEmpty) return
                       setExpandedDimensions(prev => {
                         const next = new Set(prev)
                         isExpanded ? next.delete(dim.key) : next.add(dim.key)
@@ -1265,22 +1425,22 @@ export default function InterviewPage() {
                     }}
                   >
                     <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 text-[9px] font-bold ${
-                      done && !isEmpty ? 'bg-stone-900 text-white'
-                      : done && isEmpty ? 'bg-stone-300 text-white'
+                      resolved && !isEmpty ? 'bg-stone-900 text-white'
+                      : resolved && isEmpty ? 'bg-stone-300 text-white'
                       : isActive ? 'bg-stone-100 text-stone-600'
                       : 'bg-stone-100 text-stone-300'
                     }`}>
-                      {done && !isEmpty ? '✓' : done && isEmpty ? '—' : isActive ? '·' : '·'}
+                      {resolved && !isEmpty ? '✓' : resolved && isEmpty ? '—' : isActive ? '·' : '·'}
                     </span>
                     <span className={`flex-1 text-[13px] ${
-                      done && !isEmpty ? 'text-stone-700 font-medium'
-                      : done && isEmpty ? 'text-stone-400 line-through decoration-stone-300'
+                      resolved && !isEmpty ? 'text-stone-700 font-medium'
+                      : resolved && isEmpty ? 'text-stone-400 line-through decoration-stone-300'
                       : isActive ? 'text-stone-700'
                       : 'text-stone-300'
                     }`}>
                       {dim.label}
                     </span>
-                    {done && !isEmpty && (
+                    {resolved && !isEmpty && (
                       isGenerating ? (
                         <span className="text-[10px] text-stone-400 animate-pulse">…</span>
                       ) : (() => {
@@ -1300,7 +1460,7 @@ export default function InterviewPage() {
                         )
                       })()
                     )}
-                    {done && isEmpty && (
+                    {resolved && isEmpty && (
                       <span className="text-[10px] text-stone-400 bg-stone-200 px-1.5 py-0.5 rounded-full font-medium">无对应经历</span>
                     )}
                     {isActive && (
@@ -1319,7 +1479,6 @@ export default function InterviewPage() {
                       ) : aiSummary ? (
                         <div className="pt-2">
                           {(() => {
-                            // Parse into sections: lines starting with '# ' are headers
                             const lines = aiSummary.split('\n').filter(l => l.trim())
                             const sections: { title: string | null; bullets: string[] }[] = []
                             let cur: { title: string | null; bullets: string[] } = { title: null, bullets: [] }
@@ -1335,42 +1494,61 @@ export default function InterviewPage() {
                             if (cur.bullets.length > 0 || cur.title !== null) sections.push(cur)
                             const isMulti = sections.length > 1 && sections[0].title !== null
                             return (
-                              <div className={isMulti ? 'space-y-2.5' : 'space-y-1.5'}>
-                                {sections.map((sec, si) => (
-                                  <div key={si}>
-                                    {sec.title && (
-                                      <p className="text-[10px] font-semibold text-stone-600 mb-1">{sec.title}</p>
-                                    )}
-                                    <div className="space-y-1">
-                                      {sec.bullets.map((b, bi) => (
-                                        <div key={bi} className="flex gap-2 items-start">
-                                          <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0 mt-1.5" />
-                                          <p className="text-[11px] text-stone-500 leading-snug">{b.length > 40 ? b.slice(0, 40) + '…' : b}</p>
+                              <>
+                                <div className={isMulti ? 'space-y-2.5' : 'space-y-1.5'}>
+                                  {sections.map((sec, si) => {
+                                    const secLocIdx = sec.title ? findExpStartInHistory(sec.title, messages) : -1
+                                    // First section fallback: if not found by name, use the dimension's overall start
+                                    const effectiveLocIdx = (isMulti && secLocIdx === -1 && si === 0)
+                                      ? findDimStartInHistory(dim.key, messages)
+                                      : secLocIdx
+                                    return (
+                                      <div key={si}>
+                                        {sec.title && (
+                                          <p className="text-[10px] font-semibold text-stone-600 mb-1">{sec.title}</p>
+                                        )}
+                                        <div className="space-y-1">
+                                          {sec.bullets.map((b, bi) => (
+                                            <div key={bi} className="flex gap-2 items-start">
+                                              <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0 mt-1.5" />
+                                              <p className="text-[11px] text-stone-500 leading-snug">{b.length > 40 ? b.slice(0, 40) + '…' : b}</p>
+                                            </div>
+                                          ))}
                                         </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
+                                        {isMulti && effectiveLocIdx >= 0 && (
+                                          <button
+                                            className="mt-1.5 text-[10px] text-stone-400 hover:text-stone-600 transition-colors"
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              document.getElementById(`msg-${effectiveLocIdx}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                            }}
+                                          >
+                                            定位到对话 ↑
+                                          </button>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                                {!isMulti && findDimStartInHistory(dim.key, messages) >= 0 && (
+                                  <button
+                                    className="mt-2 text-[10px] text-stone-400 hover:text-stone-600 transition-colors"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      const idx = findDimStartInHistory(dim.key, messages)
+                                      if (idx < 0) return
+                                      document.getElementById(`msg-${idx}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                                    }}
+                                  >
+                                    定位到对话 ↑
+                                  </button>
+                                )}
+                              </>
                             )
                           })()}
                         </div>
                       ) : (
                         <p className="text-[11px] text-stone-300 italic pt-2">暂无记录</p>
-                      )}
-                      {findDimStartInHistory(dim.key, messages) >= 0 && (
-                        <button
-                          className="mt-2 text-[10px] text-stone-400 hover:text-stone-600 transition-colors"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            const idx = findDimStartInHistory(dim.key, messages)
-                            if (idx < 0) return
-                            const el = document.getElementById(`msg-${idx}`)
-                            el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                          }}
-                        >
-                          定位到对话 ↑
-                        </button>
                       )}
                     </div>
                   )}

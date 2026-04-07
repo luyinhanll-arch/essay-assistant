@@ -153,15 +153,12 @@ function SectionCard({
 
 export default function FrameworkPage() {
   const router = useRouter()
-  const { messages, selectedPersona, targetProgram, framework, essayType, step1Summaries, setFramework, setEssayType, setDraft } = useAppStore()
+  const { messages, selectedPersona, targetProgram, framework, essayType, step1Summaries, setFramework, setEssayType, setWordLimit: storeSetWordLimit, setDraft } = useAppStore()
 
   const [step, setStep] = useState<'choose' | 'edit'>(framework.length > 0 ? 'edit' : 'choose')
   const [localEssayType, setLocalEssayType] = useState<EssayType>(essayType)
+  const [wordLimit, setWordLimit] = useState('')
   const [schoolNotes, setSchoolNotes] = useState('')
-  const [showSchoolNotes, setShowSchoolNotes] = useState(false)
-  const [schoolUrl, setSchoolUrl] = useState('')
-  const [isFetchingUrl, setIsFetchingUrl] = useState(false)
-  const [fetchUrlError, setFetchUrlError] = useState('')
 
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
@@ -184,34 +181,6 @@ export default function FrameworkPage() {
   const schools = programParts[0]
   const major = programParts[1]
 
-  async function fetchSchoolInfo() {
-    const url = schoolUrl.trim()
-    if (!url) return
-    setIsFetchingUrl(true)
-    setFetchUrlError('')
-    try {
-      const res = await fetch('/api/school-info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      })
-      const data = await res.json()
-      if (data.requirements) {
-        setSchoolNotes((prev) => {
-          const prefix = prev.trim() ? prev.trim() + '\n\n' : ''
-          return prefix + `【来自：${url}】\n${data.requirements}`
-        })
-        setShowSchoolNotes(true)
-      } else {
-        setFetchUrlError(data.error || '提取失败，请尝试其他链接')
-      }
-    } catch {
-      setFetchUrlError('网络错误，请重试')
-    } finally {
-      setIsFetchingUrl(false)
-    }
-  }
-
   function handleEssayTypeChange(t: EssayType) {
     setLocalEssayType(t)
     setEssayType(t)
@@ -230,7 +199,10 @@ export default function FrameworkPage() {
           persona: selectedPersona,
           targetProgram,
           essayType: localEssayType,
-          schoolNotes,
+          schoolNotes: [
+            wordLimit.trim() ? `字数限制：${wordLimit.trim()} 词` : '',
+            schoolNotes.trim(),
+          ].filter(Boolean).join('\n'),
         }),
       })
       const data = await res.json()
@@ -274,6 +246,7 @@ export default function FrameworkPage() {
 
     setGenerating(true)
     setFramework(activeSections)
+    storeSetWordLimit(wordLimit.trim())
     setDraft('')
 
     router.push('/editor?generating=1')
@@ -398,8 +371,8 @@ export default function FrameworkPage() {
 
             {/* ── 学校偏好（可选） ── */}
             <div className="bg-white border border-stone-200 rounded-2xl p-6 mb-6">
-              <div className="flex items-center justify-between mb-1">
-                <h2 className="text-sm font-semibold text-stone-700">3. 学校偏好 / 要求 <span className="text-stone-400 font-normal text-xs">（可选，影响框架侧重）</span></h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold text-stone-700">3. 字数要求 <span className="text-stone-400 font-normal text-xs">（可选）</span></h2>
                 {targetProgram && (
                   <div className="flex gap-1.5">
                     {schools && <span className="bg-stone-50 border border-stone-200 text-stone-600 text-xs px-2 py-0.5 rounded-full">{schools}</span>}
@@ -407,37 +380,25 @@ export default function FrameworkPage() {
                   </div>
                 )}
               </div>
-              <p className="text-xs text-stone-400 mb-4">粘贴学校官网链接自动提取要求，或手动填写</p>
 
-              {/* URL fetch */}
-              <div className="flex gap-2 mb-3">
+              <div className="flex items-center gap-3 mb-4">
                 <input
-                  value={schoolUrl}
-                  onChange={(e) => { setSchoolUrl(e.target.value); setFetchUrlError('') }}
-                  onKeyDown={(e) => e.key === 'Enter' && fetchSchoolInfo()}
-                  placeholder="https://… (admissions 页 / GradCafe / Reddit)"
-                  className="flex-1 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-700 placeholder-stone-400 focus:outline-none focus:border-stone-400 transition-colors min-w-0"
+                  type="number"
+                  min={100}
+                  max={5000}
+                  value={wordLimit}
+                  onChange={(e) => setWordLimit(e.target.value)}
+                  placeholder="500"
+                  className="w-28 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-700 placeholder-stone-400 focus:outline-none focus:border-stone-400 transition-colors"
                 />
-                <button
-                  onClick={fetchSchoolInfo}
-                  disabled={isFetchingUrl || !schoolUrl.trim()}
-                  className="shrink-0 bg-stone-900 hover:bg-stone-800 disabled:opacity-40 text-white text-sm px-4 py-2 rounded-xl font-medium transition-all whitespace-nowrap"
-                >
-                  {isFetchingUrl ? (
-                    <span className="flex items-center gap-1.5">
-                      <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      提取中
-                    </span>
-                  ) : '自动提取'}
-                </button>
+                <span className="text-sm text-stone-400">词（words）</span>
               </div>
-              {fetchUrlError && <p className="text-xs text-red-500 mb-2">{fetchUrlError}</p>}
 
               <textarea
                 value={schoolNotes}
                 onChange={(e) => setSchoolNotes(e.target.value)}
-                placeholder="例如：该项目注重工业界实习经历；字数限制 500 词；希望申请者有完整项目经历…"
-                rows={3}
+                placeholder="其他备注，如：希望申请者说明研究兴趣；不需要列举所有经历…"
+                rows={2}
                 className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-sm text-stone-700 placeholder-stone-400 resize-none focus:outline-none focus:border-stone-400 transition-colors"
               />
             </div>
@@ -458,7 +419,7 @@ export default function FrameworkPage() {
                 ) : `生成 ${localEssayType} 专属框架 →`}
               </button>
               <p className="text-xs text-stone-400 mt-3">
-                {selectedPersona ? `人设：${selectedPersona.title}` : '请先选择人设方向'}{schoolNotes.trim() ? ' · 已加入学校偏好' : ''}
+                {selectedPersona ? `人设：${selectedPersona.title}` : '请先选择人设方向'}{wordLimit.trim() ? ` · 字数限制 ${wordLimit} 词` : ''}{schoolNotes.trim() ? ' · 已加备注' : ''}
               </p>
             </div>
           </>

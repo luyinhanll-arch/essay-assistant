@@ -55,8 +55,7 @@ export async function POST(req: Request) {
       const { text: pages } = await extractText(new Uint8Array(bytes))
       text = Array.isArray(pages) ? pages.join('\n') : String(pages)
     } else if (mime.startsWith('image/')) {
-      const base64 = buffer.toString('base64')
-      text = await ocrImage(base64, mime)
+      return Response.json({ error: '暂不支持图片格式，请将简历导出为 PDF 或 Word (.docx) 后重新上传' }, { status: 400 })
     } else {
       return Response.json({ error: '不支持的文件格式' }, { status: 400 })
     }

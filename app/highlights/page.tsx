@@ -38,83 +38,12 @@ const COLOR_STYLES: Record<Color, {
   },
 }
 
-/** Extract first meaningful bullet from a dimension summary string */
-function firstBullet(summary: string): string {
-  if (!summary) return ''
-  const lines = summary.split('\n').map(l => l.trim()).filter(Boolean)
-  // Skip section titles (start with #)
-  const bullet = lines.find(l => !l.startsWith('#'))
-  return bullet ? bullet.replace(/^[·•]\s*/, '') : ''
-}
 
-function PersonaCard({ persona, color, selected, onSelect, onUpdate, step1Summaries }: {
+function PersonaCard({ persona, color, selected, onSelect }: {
   persona: Persona; color: Color; selected: boolean; onSelect: () => void
-  onUpdate?: (updated: Persona) => void
-  step1Summaries?: Record<string, string>
 }) {
   const c = COLOR_STYLES[color]
-  const [lines, setLines] = useState<string[]>(() =>
-    persona.evidence.split('\n').map(l => l.replace(/^·\s*/, '').trim()).filter(Boolean)
-  )
-  const [addingCustom, setAddingCustom] = useState(false)
-  const [customText, setCustomText] = useState('')
-
-  // Direction editing state
-  const [editingDirection, setEditingDirection] = useState(false)
-  const [draftTitle, setDraftTitle]       = useState(persona.title)
-  const [draftTagline, setDraftTagline]   = useState(persona.tagline)
-  const [draftDesc, setDraftDesc]         = useState(persona.description)
-  const [draftFocus, setDraftFocus]       = useState(persona.focus)
-
-  useEffect(() => {
-    setLines(persona.evidence.split('\n').map(l => l.replace(/^·\s*/, '').trim()).filter(Boolean))
-    setDraftTitle(persona.title)
-    setDraftTagline(persona.tagline)
-    setDraftDesc(persona.description)
-    setDraftFocus(persona.focus)
-  }, [persona.evidence, persona.title, persona.tagline, persona.description, persona.focus])
-
-  function commitEvidence(newLines: string[]) {
-    setLines(newLines)
-    onUpdate?.({ ...persona, evidence: newLines.map(l => `· ${l}`).join('\n') })
-  }
-
-  function removeLine(i: number) { commitEvidence(lines.filter((_, idx) => idx !== i)) }
-
-  function addCustom() {
-    const t = customText.trim()
-    if (t) { commitEvidence([...lines, t]); setCustomText('') }
-    setAddingCustom(false)
-  }
-
-  function addFromDim(dimKey: string, dimLabel: string) {
-    const summary = step1Summaries?.[dimKey] ?? ''
-    const bullet = firstBullet(summary) || dimLabel
-    if (!lines.includes(bullet)) commitEvidence([...lines, bullet])
-  }
-
-  function saveDirection() {
-    onUpdate?.({
-      ...persona,
-      title:       draftTitle.trim() || persona.title,
-      tagline:     draftTagline.trim() || persona.tagline,
-      description: draftDesc.trim() || persona.description,
-      focus:       draftFocus.trim() || persona.focus,
-    })
-    setEditingDirection(false)
-  }
-
-  function cancelDirection() {
-    setDraftTitle(persona.title)
-    setDraftTagline(persona.tagline)
-    setDraftDesc(persona.description)
-    setDraftFocus(persona.focus)
-    setEditingDirection(false)
-  }
-
-  const availableDims = INTERVIEW_DIMENSIONS.filter(d =>
-    step1Summaries?.[d.key] && !lines.some(l => l.startsWith(d.label))
-  )
+  const lines = persona.evidence.split('\n').map(l => l.replace(/^·\s*/, '').trim()).filter(Boolean)
 
   return (
     <div
@@ -124,143 +53,36 @@ function PersonaCard({ persona, color, selected, onSelect, onUpdate, step1Summar
       }`}
     >
       {/* Header */}
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 ${selected ? c.badge : 'bg-stone-100 text-stone-500'}`}>
-            {persona.id}
-          </span>
-          <div className="min-w-0">
-            <h3 className="font-bold text-stone-900 text-base truncate">{persona.title}</h3>
-            <p className={`text-xs mt-0.5 font-medium ${selected ? 'text-stone-600' : 'text-stone-400'}`}>
-              {persona.tagline}
-            </p>
-          </div>
+      <div className="flex items-center gap-2.5 min-w-0 mb-3">
+        <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold shrink-0 ${selected ? c.badge : 'bg-stone-100 text-stone-500'}`}>
+          {persona.id}
+        </span>
+        <div className="min-w-0">
+          <h3 className="font-bold text-stone-900 text-base truncate">{persona.title}</h3>
+          <p className={`text-xs mt-0.5 font-medium ${selected ? 'text-stone-600' : 'text-stone-400'}`}>
+            {persona.tagline}
+          </p>
         </div>
-        {selected && !editingDirection && (
-          <button
-            onClick={e => { e.stopPropagation(); setEditingDirection(true) }}
-            className="shrink-0 text-[11px] text-stone-400 hover:text-stone-700 transition-colors"
-          >
-            编辑方向
-          </button>
-        )}
       </div>
 
-      {/* Direction edit form */}
-      {editingDirection ? (
-        <div className="mb-4 space-y-2" onClick={e => e.stopPropagation()}>
-          <div>
-            <label className="text-[10px] text-stone-400 font-medium block mb-1">人设标签</label>
-            <input
-              value={draftTitle}
-              onChange={e => setDraftTitle(e.target.value)}
-              placeholder={'4-8字，如"工程实践派"'}
-              className="w-full text-xs text-stone-800 font-semibold bg-white border border-stone-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-stone-400"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-stone-400 font-medium block mb-1">核心定位</label>
-            <input
-              value={draftTagline}
-              onChange={e => setDraftTagline(e.target.value)}
-              placeholder="一句话说明叙事逻辑"
-              className="w-full text-xs text-stone-700 bg-white border border-stone-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-stone-400"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-stone-400 font-medium block mb-1">方向描述</label>
-            <textarea
-              value={draftDesc}
-              onChange={e => setDraftDesc(e.target.value)}
-              rows={3}
-              className="w-full text-xs text-stone-700 bg-white border border-stone-200 rounded-xl px-2.5 py-2 resize-none focus:outline-none focus:border-stone-400 leading-relaxed"
-            />
-          </div>
-          <div>
-            <label className="text-[10px] text-stone-400 font-medium block mb-1">文书侧重</label>
-            <input
-              value={draftFocus}
-              onChange={e => setDraftFocus(e.target.value)}
-              placeholder="文书应重点展示什么"
-              className="w-full text-xs text-stone-700 bg-white border border-stone-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-stone-400"
-            />
-          </div>
-          <div className="flex gap-2 justify-end pt-1">
-            <button onClick={cancelDirection} className="text-xs text-stone-400 hover:text-stone-600 px-3 py-1.5">取消</button>
-            <button onClick={saveDirection} className="text-xs font-medium text-white bg-stone-900 hover:bg-stone-800 px-3 py-1.5 rounded-lg transition-colors">保存</button>
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-stone-600 leading-relaxed mb-4">{persona.description}</p>
-      )}
+      <p className="text-sm text-stone-600 leading-relaxed mb-4">{persona.description}</p>
 
       {/* Evidence section */}
       <div className={`rounded-xl p-3 mb-3 ${selected ? 'bg-white/60' : 'bg-stone-50'}`}>
         <p className="text-[10px] text-stone-400 font-medium mb-1.5">支撑你的经历</p>
         <ul className="space-y-1">
           {lines.map((line, i) => (
-            <li key={i} className="group flex items-start gap-1.5 text-xs text-stone-500 leading-relaxed">
+            <li key={i} className="flex items-start gap-1.5 text-xs text-stone-500 leading-relaxed">
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${selected ? c.dot : 'bg-stone-300'}`} />
-              <span className="flex-1">{line}</span>
-              {selected && (
-                <button
-                  onClick={e => { e.stopPropagation(); removeLine(i) }}
-                  className="opacity-0 group-hover:opacity-100 shrink-0 text-stone-300 hover:text-red-400 transition-all text-[11px] leading-none mt-0.5"
-                >×</button>
-              )}
+              <span>{line}</span>
             </li>
           ))}
         </ul>
-
-        {/* Add controls — only when selected */}
-        {selected && (
-          <div className="mt-2.5 space-y-2">
-            {/* Dim chips */}
-            {availableDims.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {availableDims.map(d => (
-                  <button
-                    key={d.key}
-                    onClick={e => { e.stopPropagation(); addFromDim(d.key, d.label) }}
-                    className="text-[11px] text-stone-500 bg-white border border-stone-200 hover:border-stone-400 hover:text-stone-800 rounded-full px-2.5 py-0.5 transition-colors"
-                  >
-                    + {d.label}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* Custom input */}
-            {addingCustom ? (
-              <div className="flex gap-1.5" onClick={e => e.stopPropagation()}>
-                <input
-                  autoFocus
-                  value={customText}
-                  onChange={e => setCustomText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') addCustom(); if (e.key === 'Escape') setAddingCustom(false) }}
-                  placeholder="输入一条经历描述…"
-                  className="flex-1 text-xs text-stone-700 bg-white border border-stone-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-stone-500"
-                />
-                <button onClick={addCustom} className="text-[11px] font-medium text-white bg-stone-900 hover:bg-stone-700 rounded-lg px-2.5 py-1.5 transition-colors">确认</button>
-                <button onClick={() => setAddingCustom(false)} className="text-[11px] text-stone-400 hover:text-stone-600 px-1.5">取消</button>
-              </div>
-            ) : (
-              <button
-                onClick={e => { e.stopPropagation(); setAddingCustom(true) }}
-                className="text-[11px] text-stone-400 hover:text-stone-600 transition-colors"
-              >
-                + 自定义添加
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
-      {!editingDirection && (
-        <div className={`text-xs rounded-lg px-3 py-2 ${selected ? c.tag : 'bg-stone-50 text-stone-400'}`}>
-          <span className="font-medium">文书侧重：</span>{persona.focus}
-        </div>
-      )}
+      <div className={`text-xs rounded-lg px-3 py-2 ${selected ? c.tag : 'bg-stone-50 text-stone-400'}`}>
+        <span className="font-medium">文书侧重：</span>{persona.focus}
+      </div>
     </div>
   )
 }
@@ -708,7 +530,7 @@ export default function PersonaPage() {
     messages, personas, selectedPersona,
     emptyDimensions, coveredDimensions, interviewComplete,
     step1Summaries, setStep1Summary,
-    setPersonas, setSelectedPersona,
+    setPersonas, setSelectedPersona, setFramework,
   } = useAppStore()
 
   const [step, setStep]       = useState<1 | 2>(personas.length > 0 ? 2 : 1)
@@ -968,9 +790,7 @@ export default function PersonaPage() {
               key={p.id} persona={p}
               color={PERSONA_COLORS[i % PERSONA_COLORS.length]}
               selected={selectedPersona?.id === p.id}
-              onSelect={() => setSelectedPersona(p)}
-              onUpdate={updated => setSelectedPersona(updated)}
-              step1Summaries={step1Summaries}
+              onSelect={() => { setSelectedPersona(p); setFramework([]) }}
             />
           ))}
         </div>

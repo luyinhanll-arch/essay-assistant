@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAppStore } from '@/lib/store'
 
-const ACCEPT = '.pdf,.doc,.docx,.png,.jpg,.jpeg'
+const ACCEPT = '.pdf,.doc,.docx'
 
 function fileIcon(name: string) {
   const ext = name.split('.').pop()?.toLowerCase()
@@ -42,6 +42,15 @@ export default function OnboardingPage() {
       if (!res.ok) throw new Error(data.error || '解析失败')
       const text = data.text as string
       setParsedText(text)
+
+      // Step 2: analyze CV
+      setStep('analyzing')
+      if (!text.trim()) {
+        setParseError('无法提取文字内容，请确认 PDF 非扫描版，或改用 Word (.docx) 格式上传')
+        setUploadedFile(null)
+        setStep('idle')
+        return
+      }
 
       // Step 2: analyze CV
       setStep('analyzing')
@@ -127,7 +136,7 @@ export default function OnboardingPage() {
               onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }}
             />
             <p className="text-sm text-stone-500 mb-1">拖拽文件到此处，或点击上传</p>
-            <p className="text-xs text-stone-300">支持 PDF · Word (.docx) · 图片 (PNG / JPG)</p>
+            <p className="text-xs text-stone-300">支持 PDF · Word (.docx)</p>
           </div>
         ) : (
           <div className="flex items-center gap-3 bg-white border border-stone-200 rounded-xl px-4 py-3 mb-4">
