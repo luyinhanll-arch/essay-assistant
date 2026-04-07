@@ -636,9 +636,12 @@ export default function InterviewPage() {
           if (toForce.length > 0) s.setCoveredDimensions(toForce)
         }
 
-        // AI said [INTERVIEW_COMPLETE] → wait for streaming to finish before showing button
+        // AI said [INTERVIEW_COMPLETE] → only complete if the message doesn't end with a question
+        // (AI sometimes outputs [INTERVIEW_COMPLETE] while still asking a follow-up question)
         const userTurnCount = msgsWithResponse.filter(m => m.role === 'user').length
-        if (userTurnCount >= 8) {
+        const lastAiContent = fullText.replace(/\[[\w:,\s|]+\]/g, '').trim()
+        const endsWithQuestion = /[？?]/.test(lastAiContent.slice(-200))
+        if (userTurnCount >= 8 && !endsWithQuestion) {
           pendingCompleteRef.current = true
         }
         // If still not all covered: background detectCoverageWithAI will fill gaps;
