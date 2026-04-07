@@ -492,7 +492,7 @@ export default function InterviewPage() {
         // Guard: [EMPTY:dim] is only valid if [ASKING:dim] has already appeared in the conversation.
         // This prevents the AI from prematurely marking a dimension empty while discussing other topics.
         const GUARDED_DIMS = ['research', 'internship']
-        const allMsgsSoFar = msgsWithResponse
+        const allMsgsSoFar = messagesRef.current
         const safeEmpty = empty.filter(dim => {
           if (!GUARDED_DIMS.includes(dim)) return true
           return allMsgsSoFar.some(m =>
