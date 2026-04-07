@@ -372,6 +372,7 @@ export default function InterviewPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const initialized = useRef(false)
+  const pendingCompleteRef = useRef(false)
   // 记录每个维度上次生成摘要时的消息数，用于判断是否需要中途重新生成
   const summaryGeneratedAtRef = useRef<Record<string, number>>({})
 
@@ -619,10 +620,10 @@ export default function InterviewPage() {
           if (toForce.length > 0) s.setCoveredDimensions(toForce)
         }
 
-        // AI said [INTERVIEW_COMPLETE] → trust it and end the interview immediately
+        // AI said [INTERVIEW_COMPLETE] → wait for streaming to finish before showing button
         const userTurnCount = msgsWithResponse.filter(m => m.role === 'user').length
         if (userTurnCount >= 8) {
-          setInterviewComplete(true)
+          pendingCompleteRef.current = true
         }
         // If still not all covered: background detectCoverageWithAI will fill gaps;
         // the useEffect below triggers completion once all dims are detected.
@@ -632,6 +633,10 @@ export default function InterviewPage() {
       updateLastAssistantMessage('抱歉，出了点问题，请重试。')
     } finally {
       setIsThinking(false)
+      if (pendingCompleteRef.current) {
+        pendingCompleteRef.current = false
+        setInterviewComplete(true)
+      }
     }
   }
 
