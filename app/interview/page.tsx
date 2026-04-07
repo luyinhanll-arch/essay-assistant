@@ -161,15 +161,36 @@ function findExpStartInHistory(expName: string, msgs: Message[]): number {
     return false
   }
 
-  // Primary: find the earliest user message with substantial content (>80 chars) mentioning this experience,
-  // then return the preceding AI message index. This correctly handles course projects whose names
-  // also appear in academic section AI messages.
+  // Compute overlap score between experience name and a string
+  function overlapScore(content: string): number {
+    const normContent = norm(content)
+    let best = 0
+    for (const candidate of variants) {
+      if (!candidate || candidate.length < 2) continue
+      let overlap = 0
+      for (const ch of candidate) { if (normContent.includes(ch)) overlap++ }
+      const ratio = overlap / candidate.length
+      if (ratio > best) best = ratio
+    }
+    return best
+  }
+
+  // Primary: find the user message with the HIGHEST overlap score (≥0.55) AND substantial length (>100 chars),
+  // then return the preceding AI message. This ensures each experience points to where it was
+  // described in detail, not to an intro message that briefly mentions multiple experiences.
+  let bestScore = 0.54  // minimum threshold
+  let bestMsgIdx = -1
   for (let i = 1; i < msgs.length; i++) {
     const m = msgs[i]
-    if (m.role !== 'user' || m.content.length < 80) continue
-    if (!matchesVariant(m.content)) continue
-    // Find the AI message immediately before this user message
-    for (let j = i - 1; j >= 0; j--) {
+    if (m.role !== 'user' || m.content.length < 100) continue
+    const score = overlapScore(m.content)
+    if (score > bestScore) {
+      bestScore = score
+      bestMsgIdx = i
+    }
+  }
+  if (bestMsgIdx >= 0) {
+    for (let j = bestMsgIdx - 1; j >= 0; j--) {
       if (msgs[j].role === 'assistant') return j
     }
   }
