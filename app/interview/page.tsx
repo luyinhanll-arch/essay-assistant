@@ -867,6 +867,7 @@ export default function InterviewPage() {
   //  all dims are tagged, then background AI detection fills in the gaps)
   useEffect(() => {
     if (interviewComplete) return
+    if (isThinking) return  // Don't trigger while AI is still streaming
     const ALL_DIMENSIONS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
     const msgs = messagesRef.current
     const userTurns = msgs.filter(m => m.role === 'user').length
@@ -914,7 +915,7 @@ export default function InterviewPage() {
     const allDone = ALL_DIMENSIONS.every(d => coveredSet.has(d) || empty.includes(d))
     if (allDone) setInterviewComplete(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions, emptyDimensions, messages.length])
+  }, [coveredDimensions, emptyDimensions, messages.length, isThinking, interviewComplete])
   
   const roundCount = messages.filter((m) => m.role === 'user').length
   // Render messages - for the last assistant message during streaming, show streamingText
