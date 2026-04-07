@@ -642,6 +642,12 @@ export default function InterviewPage() {
         const lastAiContent = fullText.replace(/\[[\w:,\s|]+\]/g, '').trim()
         const endsWithQuestion = /[？?]/.test(lastAiContent.slice(-200))
         if (userTurnCount >= 8 && !endsWithQuestion) {
+          // Force-cover activeDimension now (useEffect won't run after interviewComplete = true)
+          const sNow = useAppStore.getState()
+          const activeDim = sNow.activeDimension
+          if (activeDim && !sNow.coveredDimensions.includes(activeDim) && !sNow.emptyDimensions.includes(activeDim)) {
+            sNow.setCoveredDimensions([activeDim])
+          }
           pendingCompleteRef.current = true
         }
         // If still not all covered: background detectCoverageWithAI will fill gaps;
