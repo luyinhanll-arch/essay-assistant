@@ -125,45 +125,61 @@ function findDimStartInHistory(dim: string, msgs: Message[]): number {
 }
 
 /**
- * Find the index of the first AI message that asks about a specific CV experience by name.
- * Matches when the message contains the experience name (≥60% char overlap) AND a question mark.
+ * Find the index of the AI message that prompted the user's detailed description of a specific experience.
+ * Strategy: first look for the earliest user message with substantial content (>80 chars) mentioning
+ * the experience name, then return the AI message just before it. Falls back to the first AI message
+ * that asks about the experience name (original behavior).
  */
 function findExpStartInHistory(expName: string, msgs: Message[]): number {
   const norm = (s: string) => s.toLowerCase().replace(/[\s""''「」【】《》()（）\-_·•,，.。：:]/g, '')
-  // Try multiple variants: full name, part before colon, each part, and 4-char substrings of long names
+  // Build matching variants: full name, parts before colon, 4-char substrings
   const variants: string[] = []
   const parts = expName.split(/[：:]/)
   parts.forEach(p => { const n = norm(p); if (n.length >= 2) variants.push(n) })
   const fullNorm = norm(expName)
   if (!variants.includes(fullNorm)) variants.unshift(fullNorm)
-  // For long names (>6 chars), also try sliding 4-char windows as additional candidates
   if (fullNorm.length > 6) {
     for (let s = 0; s <= fullNorm.length - 4; s++) {
       const sub = fullNorm.slice(s, s + 4)
       if (!variants.includes(sub)) variants.push(sub)
     }
   }
-
   if (variants.every(v => !v)) return -1
 
+  function matchesVariant(content: string): boolean {
+    const normContent = norm(content)
+    for (const candidate of variants) {
+      if (!candidate) continue
+      if (normContent.includes(candidate)) return true
+      if (candidate.length >= 6 && normContent.includes(candidate.slice(0, Math.ceil(candidate.length * 0.7)))) return true
+      if (candidate.length >= 4) {
+        let overlap = 0
+        for (const ch of candidate) { if (normContent.includes(ch)) overlap++ }
+        if (overlap / candidate.length >= 0.55) return true
+      }
+    }
+    return false
+  }
+
+  // Primary: find the earliest user message with substantial content (>80 chars) mentioning this experience,
+  // then return the preceding AI message index. This correctly handles course projects whose names
+  // also appear in academic section AI messages.
+  for (let i = 1; i < msgs.length; i++) {
+    const m = msgs[i]
+    if (m.role !== 'user' || m.content.length < 80) continue
+    if (!matchesVariant(m.content)) continue
+    // Find the AI message immediately before this user message
+    for (let j = i - 1; j >= 0; j--) {
+      if (msgs[j].role === 'assistant') return j
+    }
+  }
+
+  // Fallback: first AI message with a question mark mentioning the name
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i]
     if (m.role !== 'assistant') continue
     if (!/[？?]/.test(m.content)) continue
-    const normContent = norm(m.content)
-    for (const candidate of variants) {
-      if (!candidate) continue
-      // Direct substring match
-      if (normContent.includes(candidate)) return i
-      // Prefix match (first 70% of candidate) — only for longer candidates to avoid false matches
-      if (candidate.length >= 6 && normContent.includes(candidate.slice(0, Math.ceil(candidate.length * 0.7)))) return i
-      // Character overlap (≥55% of candidate chars appear in content) — lowered from 65%
-      if (candidate.length >= 4) {
-        let overlap = 0
-        for (const ch of candidate) { if (normContent.includes(ch)) overlap++ }
-        if (overlap / candidate.length >= 0.55) return i
-      }
-    }
+    if (matchesVariant(m.content)) return i
   }
   return -1
 }
