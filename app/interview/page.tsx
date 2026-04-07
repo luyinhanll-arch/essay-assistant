@@ -619,20 +619,9 @@ export default function InterviewPage() {
           if (toForce.length > 0) s.setCoveredDimensions(toForce)
         }
 
-        const s2 = useAppStore.getState()
-        const coveredSet = new Set(s2.coveredDimensions)
-        const allCovered = ALL_DIMENSIONS.every(d => coveredSet.has(d))
-        // CV users: complete if all non-exp dims covered + every exp dim is covered or empty
-        const NON_EXP = ['motivation', 'plan', 'personal']
-        const EXP = ['academic', 'project', 'internship', 'research']
-        const cvComplete = !!s2.cvText &&
-          NON_EXP.every(d => coveredSet.has(d)) &&
-          EXP.every(d => coveredSet.has(d) || s2.emptyDimensions.includes(d))
-        // Require at least 8 user turns before declaring the interview complete,
-        // matching the prompt's rule. Prevents premature completion when the AI
-        // outputs [INTERVIEW_COMPLETE] too early (e.g. after a short "没有" chain).
+        // AI said [INTERVIEW_COMPLETE] → trust it and end the interview immediately
         const userTurnCount = msgsWithResponse.filter(m => m.role === 'user').length
-        if ((allCovered || cvComplete) && userTurnCount >= 8) {
+        if (userTurnCount >= 8) {
           setInterviewComplete(true)
         }
         // If still not all covered: background detectCoverageWithAI will fill gaps;
