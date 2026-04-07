@@ -489,8 +489,19 @@ export default function InterviewPage() {
       // Must happen before the asking-transition check so that a message like
       // [COVERED:research][ASKING:motivation] correctly sees research as covered.
       if (empty.length > 0) {
-        empty.forEach(dim => markDimensionEmpty(dim))
-        setCoveredDimensions(empty)
+        // Guard: [EMPTY:dim] is only valid if [ASKING:dim] has already appeared in the conversation.
+        // This prevents the AI from prematurely marking a dimension empty while discussing other topics.
+        const GUARDED_DIMS = ['research', 'internship']
+        const allMsgsSoFar = msgsWithResponse
+        const safeEmpty = empty.filter(dim => {
+          if (!GUARDED_DIMS.includes(dim)) return true
+          return allMsgsSoFar.some(m =>
+            m.role === 'assistant' &&
+            new RegExp(`\\[ASKING[：:]\\s*${dim}\\]`, 'i').test(m.rawContent ?? m.content)
+          )
+        })
+        safeEmpty.forEach(dim => markDimensionEmpty(dim))
+        setCoveredDimensions(safeEmpty)
       }
       if (covered.length > 0) {
         setCoveredDimensions(covered)
