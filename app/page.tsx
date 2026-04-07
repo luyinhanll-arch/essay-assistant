@@ -2,8 +2,8 @@ import Link from 'next/link'
 
 const features = [
   {
-    title: '针对你的目标院校定制侧重',
-    desc: '可粘贴学校官网链接自动提取申请要求，框架侧重随之调整；也可手动填写字数限制与院校偏好。',
+    title: '每所学校一篇文书，云端保存随时查看',
+    desc: '保存功能按学校区分文书，随时回来查看、对比不同版本；中英文同步保存，换设备也不丢失。',
   },
   {
     title: '听得出你平庸文字背后的闪光点',
@@ -19,7 +19,7 @@ const steps = [
   { num: '01', title: '深度访谈', desc: 'Omi 覆盖 7 个维度主动追问，挖掘学术、项目、实习、科研、动机等真实经历' },
   { num: '02', title: '人设定位', desc: 'AI 整理经历摘要，提炼 2–3 个叙事方向，选一个最符合你感觉的' },
   { num: '03', title: '文书框架', desc: '支持 SOP / PS，生成专属框架，可调整顺序与核心论点' },
-  { num: '04', title: '初稿 & 修改', desc: '生成完整英文初稿，中英对照阅读，输入修改指令迭代打磨' },
+  { num: '04', title: '初稿 & 修改', desc: '生成完整英文初稿，中英对照阅读，输入修改指令迭代打磨，保存至云端随时查看' },
 ]
 
 export default function HomePage() {
@@ -29,9 +29,14 @@ export default function HomePage() {
       {/* ── Nav ── */}
       <nav className="border-b border-stone-200 px-8 py-4 flex items-center justify-between">
         <span className="font-bold text-orange-500 tracking-tight">EssayMind</span>
-        <Link href="/onboarding" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
-          开始写文书 →
-        </Link>
+        <div className="flex items-center gap-6">
+          <Link href="/essays" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
+            我的文书
+          </Link>
+          <Link href="/onboarding" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
+            开始写文书 →
+          </Link>
+        </div>
       </nav>
 
       {/* ── Hero ── */}
@@ -108,7 +113,7 @@ export default function HomePage() {
 
       {/* ── Footer ── */}
       <footer className="border-t border-stone-200 py-6 text-center text-xs text-stone-400 tracking-wide">
-        EssayMind · AI 留学文书助手 · MVP 版本
+        EssayMind · AI 留学文书助手
       </footer>
 
     </main>
