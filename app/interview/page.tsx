@@ -396,6 +396,7 @@ export default function InterviewPage() {
   } = useAppStore()
 
   const [isThinking, setIsThinking] = useState(false)
+  const isThinkingRef = useRef(false)
   const [streamingText, setStreamingText] = useState('')
   const [textInput, setTextInput] = useState('')
 
@@ -439,6 +440,7 @@ export default function InterviewPage() {
   async function callAI(msgs: Message[]) {
     setStreamingText('')
     setIsThinking(true)
+    isThinkingRef.current = true
     addMessage({ role: 'assistant', content: '' })
 
     try {
@@ -690,6 +692,7 @@ export default function InterviewPage() {
       updateLastAssistantMessage('抱歉，出了点问题，请重试。')
     } finally {
       setIsThinking(false)
+      isThinkingRef.current = false
       if (pendingCompleteRef.current) {
         pendingCompleteRef.current = false
         setInterviewComplete(true)
@@ -867,7 +870,7 @@ export default function InterviewPage() {
   //  all dims are tagged, then background AI detection fills in the gaps)
   useEffect(() => {
     if (interviewComplete) return
-    if (isThinking) return  // Don't trigger while AI is still streaming
+    if (isThinkingRef.current) return  // Don't trigger while AI is still streaming
     const ALL_DIMENSIONS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
     const msgs = messagesRef.current
     const userTurns = msgs.filter(m => m.role === 'user').length
@@ -915,7 +918,8 @@ export default function InterviewPage() {
     const allDone = ALL_DIMENSIONS.every(d => coveredSet.has(d) || empty.includes(d))
     if (allDone) setInterviewComplete(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions, emptyDimensions, messages.length, isThinking, interviewComplete])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coveredDimensions, emptyDimensions, messages.length])
   
   const roundCount = messages.filter((m) => m.role === 'user').length
   // Render messages - for the last assistant message during streaming, show streamingText
