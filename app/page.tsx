@@ -1,4 +1,7 @@
+'use client'
+
 import Link from 'next/link'
+import { useEffect, useState } from 'react'
 
 const features = [
   {
@@ -22,7 +25,33 @@ const steps = [
   { num: '04', title: '初稿 & 修改', desc: '生成完整英文初稿，中英对照阅读，输入修改指令迭代打磨，保存至云端随时查看' },
 ]
 
+type UserState = 'new' | 'interviewing' | 'done'
+
+function detectUserState(): UserState {
+  try {
+    const raw = localStorage.getItem('essay-assistant-store')
+    if (!raw) return 'new'
+    const data = JSON.parse(raw)?.state
+    if (!data) return 'new'
+    if (data.draft) return 'done'
+    if (data.messages?.length > 2) return 'interviewing'
+    return 'new'
+  } catch {
+    return 'new'
+  }
+}
+
 export default function HomePage() {
+  const [userState, setUserState] = useState<UserState>('new')
+
+  useEffect(() => {
+    setUserState(detectUserState())
+  }, [])
+
+  const ctaHref = userState === 'done' ? '/editor' : userState === 'interviewing' ? '/interview' : '/onboarding'
+  const ctaLabel = userState === 'done' ? '继续编辑文书 →' : userState === 'interviewing' ? '继续采访 →' : '免费开始写文书 →'
+  const ctaBottomLabel = userState === 'done' ? '继续编辑文书 →' : userState === 'interviewing' ? '继续采访 →' : '立即开始 →'
+
   return (
     <main className="min-h-screen bg-[#FAF9F6] text-stone-900">
 
@@ -33,8 +62,18 @@ export default function HomePage() {
           <Link href="/essays" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
             我的文书
           </Link>
+          {userState === 'interviewing' && (
+            <Link href="/interview" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
+              继续采访
+            </Link>
+          )}
+          {userState === 'done' && (
+            <Link href="/editor" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
+              继续编辑
+            </Link>
+          )}
           <Link href="/onboarding" className="text-sm text-stone-500 hover:text-stone-900 transition-colors">
-            开始写文书 →
+            {userState === 'new' ? '开始写文书 →' : '重新开始 →'}
           </Link>
         </div>
       </nav>
@@ -54,10 +93,10 @@ export default function HomePage() {
           不依赖中介，不靠 AI 模板——访谈、定位、框架、初稿，一步一步写出真正属于你的文书。
         </p>
         <Link
-          href="/onboarding"
+          href={ctaHref}
           className="inline-flex items-center gap-2 bg-stone-900 hover:bg-stone-800 text-white font-medium px-8 py-3.5 rounded-xl text-base transition-colors"
         >
-          免费开始写文书 →
+          {ctaLabel}
         </Link>
       </section>
 
@@ -85,7 +124,7 @@ export default function HomePage() {
             {features.map((f, i) => (
               <div key={i} className="flex items-start gap-12 py-6">
                 <span className="text-sm text-stone-300 tabular-nums shrink-0 w-6 pt-0.5">0{i + 1}</span>
-                <p className="font-medium text-stone-900 w-64 shrink-0 leading-snug">{f.title}</p>
+                <p className="font-medium text-stone-900 w-52 shrink-0 leading-snug">{f.title}</p>
                 <p className="text-sm text-stone-500 leading-relaxed">{f.desc}</p>
               </div>
             ))}
@@ -103,10 +142,10 @@ export default function HomePage() {
             每一个有真实追求的申请者，都值得用自己的故事打动招生官。
           </p>
           <Link
-            href="/onboarding"
+            href={ctaHref}
             className="inline-flex items-center gap-2 bg-stone-900 hover:bg-stone-800 text-white font-medium px-8 py-3.5 rounded-xl text-base transition-colors"
           >
-            立即开始 →
+            {ctaBottomLabel}
           </Link>
         </div>
       </section>
