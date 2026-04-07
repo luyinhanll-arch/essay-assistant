@@ -2,11 +2,11 @@ import Link from 'next/link'
 
 const features = [
   {
-    title: '每所学校一篇文书，云端保存随时查看',
-    desc: '保存功能按学校区分文书，随时回来查看、对比不同版本；中英文同步保存，换设备也不丢失。',
+    title: '按学校保存文书，随时查看',
+    desc: '每所学校对应一篇文书，中英文同步云端保存，随时回来查看或继续修改，换设备也不丢失。',
   },
   {
-    title: '听得出你平庸文字背后的闪光点',
+    title: '听得出你文字背后的闪光点',
     desc: '通过 7 个维度的深度访谈，Omi 主动追问细节，将你的经历整理成清晰的叙事方向——包括那些你自己都忽略的亮点。',
   },
   {
@@ -80,7 +80,7 @@ export default function HomePage() {
       {/* ── Features ── */}
       <section className="border-t border-stone-200">
         <div className="max-w-5xl mx-auto px-8 py-16">
-          <p className="text-xs text-stone-400 tracking-widest uppercase mb-12">为什么不用 ChatGPT 就够了</p>
+          <p className="text-xs text-stone-400 tracking-widest uppercase mb-12">EssayMind 能做到什么</p>
           <div className="divide-y divide-stone-200">
             {features.map((f, i) => (
               <div key={i} className="flex items-start gap-12 py-6">
