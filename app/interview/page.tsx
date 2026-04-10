@@ -60,12 +60,26 @@ export default function InterviewPage() {
   // over keyword scanning in findDimStartInHistory, making the button reliable for
   // all dims including motivation/plan/personal where keywords are fragile.
   function getDimStart(dim: string): number {
-    if (dim in dimensionMessageIndex) return dimensionMessageIndex[dim]
+    // For internship/research: ignore dimensionMessageIndex if it points to a message
+    // before the formal interview starts ([ASKING:academic]), which means it was set
+    // during pre-screening and is the wrong location.
+    const formalStart = (['internship', 'research'].includes(dim))
+      ? messages.findIndex(m =>
+          m.role === 'assistant' &&
+          /\[ASKING[：:]\s*academic\]/i.test((m as Message & { rawContent?: string }).rawContent ?? m.content)
+        )
+      : -1
+
+    if (dim in dimensionMessageIndex) {
+      const storedIdx = dimensionMessageIndex[dim]
+      if (formalStart < 0 || storedIdx >= formalStart) return storedIdx
+      // stored index is before formal interview — fall through to scan
+    }
     const found = findDimStartInHistory(dim, messages)
     if (found >= 0) return found
     // Last-resort: scan rawContent for [ASKING:dim] or [COVERED:dim] tag that may have been
     // missed by the live parser (e.g. page was refreshed mid-conversation).
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = Math.max(0, formalStart); i < messages.length; i++) {
       const m = messages[i]
       if (m.role !== 'assistant') continue
       const raw = (m as Message & { rawContent?: string }).rawContent ?? m.content

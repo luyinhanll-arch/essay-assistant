@@ -115,11 +115,21 @@ export default function TestPage() {
   // ──────────────────────────────────────────────────────────────────────────
 
   function getDimStart(dim: string): number {
-    if (dim in dimensionMessageIndex) return dimensionMessageIndex[dim]
+    const formalStart = (['internship', 'research'].includes(dim))
+      ? messages.findIndex(m =>
+          m.role === 'assistant' &&
+          /\[ASKING[：:]\s*academic\]/i.test((m as Message & { rawContent?: string }).rawContent ?? m.content)
+        )
+      : -1
+
+    if (dim in dimensionMessageIndex) {
+      const storedIdx = dimensionMessageIndex[dim]
+      if (formalStart < 0 || storedIdx >= formalStart) return storedIdx
+    }
     const found = findDimStartInHistory(dim, messages)
     if (found >= 0) return found
     // Last-resort: scan rawContent for [ASKING:dim] or [COVERED:dim] tag
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = Math.max(0, formalStart); i < messages.length; i++) {
       const m = messages[i]
       if (m.role !== 'assistant') continue
       const raw = (m as Message & { rawContent?: string }).rawContent ?? m.content
