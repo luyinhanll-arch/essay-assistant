@@ -15,9 +15,9 @@ export async function POST(req: Request) {
     quickInfo = null,
   }: { messages: Message[]; coveredDimensions?: string[]; deferredDimensions?: string[]; emptyDimensions?: string[]; cvText?: string; cvAnalysis?: string; quickInfo?: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null } = await req.json()
 
-  // Exclude both covered and deferred from the normal list
+  // Exclude covered, deferred, and empty from the normal list
   const missing = ALL_DIMENSIONS.filter(
-    d => !coveredDimensions.includes(d) && !deferredDimensions.includes(d)
+    d => !coveredDimensions.includes(d) && !deferredDimensions.includes(d) && !emptyDimensions.includes(d)
   )
 
   // Re-insert uncovered deferred dimensions just before 'personal'
