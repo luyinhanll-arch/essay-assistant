@@ -15,6 +15,7 @@ export interface Essay {
   school: string
   program: string | null
   degree: string | null
+  essay_type: string
   en_text: string | null
   zh_text: string | null
   updated_at: string

@@ -105,7 +105,8 @@ export async function POST(req: Request) {
       relatedSummaries = {},
       cvText = '',
       cvAnalysis = '',
-    }: { dimension: string; messages: Message[]; format?: 'structured' | 'paragraph'; relatedSummaries?: Record<string, string>; cvText?: string; cvAnalysis?: string } = await req.json()
+      structuredSummary = '',
+    }: { dimension: string; messages: Message[]; format?: 'structured' | 'paragraph'; relatedSummaries?: Record<string, string>; cvText?: string; cvAnalysis?: string; structuredSummary?: string } = await req.json()
 
     if (!dimension || !rawMessages || !Array.isArray(rawMessages)) {
       return Response.json({ error: '缺少必要参数' }, { status: 400 })
@@ -185,7 +186,14 @@ export async function POST(req: Request) {
         const cvContext = hasCv
           ? `申请者已提供简历，其中包含经历的基本信息；访谈对话则提供了更深入的细节。请综合两者进行总结，以访谈中的深挖内容为主，简历信息作为补充。${cvBlock}${cvAnalysisBlock}${cvNamesBlock}\n\n`
           : ''
-        userPrompt = `${cvContext}请扫描以下完整访谈对话（包括所有话题），找出申请者在【${dimensionLabel}】方面**曾经提到过的所有经历**——无论是在正式讨论该话题时提及的，还是在其他话题中顺带提及的。
+        // If the sidebar already identified experiences in structured format, anchor to that list
+        const structuredTitles = structuredSummary
+          ? structuredSummary.split('\n').filter(l => l.startsWith('# ')).map(l => l.slice(2).trim()).filter(Boolean)
+          : []
+        const anchorBlock = structuredTitles.length > 0
+          ? `【已识别的经历清单——必须全部覆盖】以下经历已在访谈中被识别，**每一条都必须出现在输出中**，不得遗漏：\n${structuredTitles.map(t => `- ${t}`).join('\n')}\n\n`
+          : ''
+        userPrompt = `${cvContext}${anchorBlock}请扫描以下完整访谈对话（包括所有话题），找出申请者在【${dimensionLabel}】方面**曾经提到过的所有经历**——无论是在正式讨论该话题时提及的，还是在其他话题中顺带提及的。
 ${claimedBlock ? `\n${claimedBlock}\n` : ''}
 对话内容：
 ${conversationText}
@@ -269,6 +277,7 @@ ${claimedBlock ? `\n${claimedBlock}\n` : ''}
 ${conversationText}
 
 ## 输出格式：
+- 如果对话中**完全没有**提及任何符合本维度定义的经历，只输出「无」，不要编造或解释
 - **每一段经历都必须列出，不得遗漏**，即使只有一两句话的简短提及，包括课程作业/课程大作业/课程项目等在对话中顺带提及的经历
 - 每组首行**必须**写「# 经历名称」（公司名/项目名/竞赛名，10字以内），即使只有一段经历也要有标题行，下面 1-2 行以「· 」开头写核心事实；信息不足时写 1 点也可
 - 每条要点 10-25 字，必须具体（名称、数字、结果），不写废话，**不得使用省略号（…或...）**，信息量大时精炼成完整句而非截断

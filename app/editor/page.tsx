@@ -470,7 +470,7 @@ function EditorContent() {
       const res = await fetch('/api/essays', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, school, program, degree, en_text: text, zh_text: zhText || null }),
+        body: JSON.stringify({ token, school, program, degree, essay_type: essayType, en_text: text, zh_text: zhText || null }),
       })
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))

@@ -530,6 +530,7 @@ export default function PersonaPage() {
     messages, personas, selectedPersona,
     emptyDimensions, coveredDimensions, interviewComplete,
     step1Summaries, setStep1Summary,
+    dimensionSummaries,
     setPersonas, setSelectedPersona, setFramework,
   } = useAppStore()
 
@@ -566,10 +567,11 @@ export default function PersonaPage() {
       if (useAppStore.getState().step1Summaries[dim]) return
       setParagraphLoading(prev => ({ ...prev, [dim]: true }))
       try {
+        const structuredSummary = useAppStore.getState().dimensionSummaries[dim] || ''
         const res = await fetch('/api/summarize-dimension', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dimension: dim, messages, relatedSummaries, format: 'paragraph' }),
+          body: JSON.stringify({ dimension: dim, messages, relatedSummaries, format: 'paragraph', structuredSummary }),
         })
         const data = await res.json()
         if (data.summary && !useAppStore.getState().step1Summaries[dim]) {
@@ -615,13 +617,16 @@ export default function PersonaPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingDimsKey])
 
-  async function generatePersonas() {
+  async function generatePersonas(regenerate = false) {
     setLoading(true); setError('')
     try {
       const res = await fetch('/api/highlights', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ summaries: step1Summaries }),
+        body: JSON.stringify({
+          summaries: step1Summaries,
+          existingPersonas: regenerate ? personas : [],
+        }),
       })
       const data = await res.json()
       if (data.personas) { setPersonas(data.personas); setSelectedPersona(data.personas[0]); setStep(2) }
@@ -797,7 +802,7 @@ export default function PersonaPage() {
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <button onClick={() => generatePersonas()} className="text-sm text-stone-400 hover:text-stone-600 transition-colors">
+            <button onClick={() => generatePersonas(true)} className="text-sm text-stone-400 hover:text-stone-600 transition-colors">
               重新生成
             </button>
             <button onClick={() => setStep(1)} className="text-sm text-stone-400 hover:text-stone-600 transition-colors">

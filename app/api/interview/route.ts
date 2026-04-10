@@ -12,7 +12,8 @@ export async function POST(req: Request) {
     emptyDimensions = [],
     cvText = '',
     cvAnalysis = '',
-  }: { messages: Message[]; coveredDimensions?: string[]; deferredDimensions?: string[]; emptyDimensions?: string[]; cvText?: string; cvAnalysis?: string } = await req.json()
+    quickInfo = null,
+  }: { messages: Message[]; coveredDimensions?: string[]; deferredDimensions?: string[]; emptyDimensions?: string[]; cvText?: string; cvAnalysis?: string; quickInfo?: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null } = await req.json()
 
   // Exclude both covered and deferred from the normal list
   const missing = ALL_DIMENSIONS.filter(
@@ -87,7 +88,7 @@ export async function POST(req: Request) {
   }
 
   return streamDeepSeek(
-    buildInterviewSystemPrompt(missing, cvText, cvAnalysisForPrompt),
+    buildInterviewSystemPrompt(missing, cvText, cvAnalysisForPrompt, quickInfo),
     messages.map((m) => ({ role: m.role, content: m.content }))
   )
 }

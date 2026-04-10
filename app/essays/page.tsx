@@ -66,7 +66,12 @@ export default function EssaysPage() {
               {/* Card header */}
               <div className="px-6 py-4 flex items-start justify-between">
                 <div>
-                  <div className="font-semibold text-lg">{essay.school}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="font-semibold text-lg">{essay.school}</div>
+                    {essay.essay_type && (
+                      <span className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-stone-100 text-stone-500">{essay.essay_type}</span>
+                    )}
+                  </div>
                   {(essay.program || essay.degree) && (
                     <div className="text-sm text-stone-500 mt-0.5">
                       {[essay.program, essay.degree].filter(Boolean).join(' · ')}

@@ -7,6 +7,8 @@ import { useAppStore } from '@/lib/store'
 
 const ACCEPT = '.pdf,.doc,.docx'
 
+const DEGREE_OPTIONS = ['硕士 (MS/MA)', '博士 (PhD)', 'MBA', 'MFA', '本科转学', '其他']
+
 function fileIcon(name: string) {
   const ext = name.split('.').pop()?.toLowerCase()
   if (ext === 'pdf') return { label: 'PDF', bg: 'bg-red-100 text-red-600' }
@@ -16,7 +18,7 @@ function fileIcon(name: string) {
 
 export default function OnboardingPage() {
   const router = useRouter()
-  const { setCvText, setCvAnalysis, resetInterview } = useAppStore()
+  const { setCvText, setCvAnalysis, resetInterview, setQuickInfo } = useAppStore()
   const [analysis, setAnalysis] = useState('')
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [fileUrl, setFileUrl] = useState<string>('')
@@ -25,6 +27,7 @@ export default function OnboardingPage() {
   const [step, setStep] = useState<'idle' | 'parsing' | 'analyzing' | 'done'>('idle')
   const [parseError, setParseError] = useState('')
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [quickInfo, setQuickInfoLocal] = useState({ school: '', major: '', gpa: '', targetSchool: '', targetMajor: '', degree: '' })
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function handleFile(file: File) {
@@ -101,6 +104,13 @@ export default function OnboardingPage() {
     const cv = uploadedFile ? parsedText : pasteText
     resetInterview()
     setCvText(cv.trim())
+    // Save quick info only when no CV provided and at least one field filled
+    if (!cv.trim()) {
+      const hasQuickInfo = Object.values(quickInfo).some(v => v.trim())
+      setQuickInfo(hasQuickInfo ? quickInfo : null)
+    } else {
+      setQuickInfo(null)
+    }
     router.push('/interview')
   }
 
@@ -212,14 +222,87 @@ export default function OnboardingPage() {
             value={pasteText}
             onChange={e => setPasteText(e.target.value)}
             placeholder="或直接粘贴简历文本内容……"
-            rows={12}
+            rows={6}
             className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm text-stone-800 placeholder-stone-300 focus:outline-none focus:border-stone-400 resize-none leading-relaxed"
           />
         )}
 
+        {/* Quick info form — shown when no CV at all */}
+        {!uploadedFile && !pasteText.trim() && (
+          <div className="mt-4 bg-white border border-stone-200 rounded-xl px-5 py-4">
+            <p className="text-xs text-stone-400 mb-3 tracking-wide uppercase">没有简历？填几个字帮 Omi 了解你（选填）</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-stone-400 mb-1 block">目前就读学校</label>
+                <input
+                  type="text"
+                  value={quickInfo.school}
+                  onChange={e => setQuickInfoLocal(q => ({ ...q, school: e.target.value }))}
+                  placeholder="如：北京大学"
+                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-800 placeholder-stone-300 focus:outline-none focus:border-stone-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-stone-400 mb-1 block">目前就读专业</label>
+                <input
+                  type="text"
+                  value={quickInfo.major}
+                  onChange={e => setQuickInfoLocal(q => ({ ...q, major: e.target.value }))}
+                  placeholder="如：计算机科学"
+                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-800 placeholder-stone-300 focus:outline-none focus:border-stone-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-stone-400 mb-1 block">GPA / 成绩</label>
+                <input
+                  type="text"
+                  value={quickInfo.gpa}
+                  onChange={e => setQuickInfoLocal(q => ({ ...q, gpa: e.target.value }))}
+                  placeholder="如：3.8/4.0 或 排名前10%"
+                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-800 placeholder-stone-300 focus:outline-none focus:border-stone-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-stone-400 mb-1 block">目标院校（可多写）</label>
+                <input
+                  type="text"
+                  value={quickInfo.targetSchool}
+                  onChange={e => setQuickInfoLocal(q => ({ ...q, targetSchool: e.target.value }))}
+                  placeholder="如：CMU、Stanford"
+                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-800 placeholder-stone-300 focus:outline-none focus:border-stone-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-stone-400 mb-1 block">申请专业</label>
+                <input
+                  type="text"
+                  value={quickInfo.targetMajor}
+                  onChange={e => setQuickInfoLocal(q => ({ ...q, targetMajor: e.target.value }))}
+                  placeholder="如：CS / HCI / Data Science"
+                  className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm text-stone-800 placeholder-stone-300 focus:outline-none focus:border-stone-400"
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="text-xs text-stone-400 mb-1 block">申请学位</label>
+                <div className="flex flex-wrap gap-2">
+                  {DEGREE_OPTIONS.map(d => (
+                    <button
+                      key={d}
+                      onClick={() => setQuickInfoLocal(q => ({ ...q, degree: q.degree === d ? '' : d }))}
+                      className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${quickInfo.degree === d ? 'bg-stone-900 text-white border-stone-900' : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'}`}
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center justify-between mt-4">
           <button
-            onClick={() => { resetInterview(); setCvText(''); router.push('/interview') }}
+            onClick={() => { resetInterview(); setCvText(''); setQuickInfo(null); router.push('/interview') }}
             className="text-sm text-stone-400 hover:text-stone-600 transition-colors"
           >
             跳过，直接开始

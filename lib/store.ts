@@ -20,9 +20,11 @@ interface AppStore {
   draft: string
   dimensionSummaries: Record<string, string>      // 维度key -> AI总结
   dimensionMessageIndex: Record<string, number>   // 维度key -> 触发覆盖时的消息index
+  expMessageIndex: Record<string, number>          // 经历名称 -> [EXP:] 标记所在的消息index
   activeDimension: string | null                  // 当前正在被问询的维度
   emptyDimensions: string[]                       // 已确认无相关经历的维度
   step1Summaries: Record<string, string>          // step1 段落摘要（生成一次后持久化）
+  quickInfo: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null
 
   addMessage: (msg: Message) => void
   updateLastAssistantMessage: (content: string, rawContent?: string) => void
@@ -44,6 +46,8 @@ interface AppStore {
   markDimensionEmpty: (dim: string) => void
   removeFromEmpty: (dim: string) => void
   setStep1Summary: (dim: string, summary: string) => void
+  setExpMessageIndex: (name: string, index: number) => void
+  setQuickInfo: (info: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null) => void
   resetInterview: () => void
   reset: () => void
 }
@@ -64,9 +68,11 @@ const initialState = {
   draft: '',
   dimensionSummaries: {},
   dimensionMessageIndex: {},
+  expMessageIndex: {},
   activeDimension: null,
   emptyDimensions: [],
   step1Summaries: {},
+  quickInfo: null,
 }
 
 export const useAppStore = create<AppStore>()(
@@ -123,6 +129,10 @@ export const useAppStore = create<AppStore>()(
       setStep1Summary: (dim, summary) => set((state) => ({
         step1Summaries: { ...state.step1Summaries, [dim]: summary },
       })),
+      setExpMessageIndex: (name, index) => set((state) => ({
+        expMessageIndex: { ...state.expMessageIndex, [name]: index },
+      })),
+      setQuickInfo: (info) => set({ quickInfo: info }),
 
       resetInterview: () => set({
     messages: [],
@@ -137,6 +147,7 @@ export const useAppStore = create<AppStore>()(
     draft: '',
     dimensionSummaries: {},
     dimensionMessageIndex: {},
+    expMessageIndex: {},
     activeDimension: null,
     emptyDimensions: [],
     step1Summaries: {},

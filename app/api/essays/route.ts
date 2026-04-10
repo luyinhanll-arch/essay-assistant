@@ -9,26 +9,34 @@ export async function GET(req: NextRequest) {
   if (!token) return NextResponse.json({ error: 'missing token' }, { status: 400 })
 
   const { rows } = await pool.query(
-    'SELECT id, school, program, degree, en_text, zh_text, updated_at FROM essays WHERE user_token=$1 ORDER BY updated_at DESC',
+    'SELECT id, school, program, degree, essay_type, en_text, zh_text, updated_at FROM essays WHERE user_token=$1 ORDER BY updated_at DESC',
     [token]
   )
   return NextResponse.json({ essays: rows })
 }
 
-// POST /api/essays → upsert by user_token + school
+// POST /api/essays → upsert by user_token + school + essay_type
 export async function POST(req: NextRequest) {
   const body = await req.json()
-  const { token, school, program, degree, en_text, zh_text } = body
+  const { token, school, program, degree, essay_type, en_text, zh_text } = body
   if (!token || !school) return NextResponse.json({ error: 'missing fields' }, { status: 400 })
 
-  const { rows } = await pool.query(
-    `INSERT INTO essays (user_token, school, program, degree, en_text, zh_text, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,now())
-     ON CONFLICT (user_token, school)
-     DO UPDATE SET program=$3, degree=$4, en_text=$5, zh_text=$6, updated_at=now()
-     RETURNING *`,
-    [token, school, program ?? null, degree ?? null, en_text ?? null, zh_text ?? null]
-  )
+  const type = essay_type || 'SOP'
+  let rows
+  try {
+    const result = await pool.query(
+      `INSERT INTO essays (user_token, school, program, degree, essay_type, en_text, zh_text, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,now())
+       ON CONFLICT (user_token, school, essay_type)
+       DO UPDATE SET program=$3, degree=$4, en_text=$6, zh_text=$7, updated_at=now()
+       RETURNING *`,
+      [token, school, program ?? null, degree ?? null, type, en_text ?? null, zh_text ?? null]
+    )
+    rows = result.rows
+  } catch (dbErr) {
+    console.error('[essays POST] DB error:', dbErr)
+    return NextResponse.json({ error: String(dbErr) }, { status: 500 })
+  }
   return NextResponse.json({ essay: rows[0] })
 }
 
