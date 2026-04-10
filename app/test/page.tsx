@@ -289,6 +289,7 @@ export default function TestPage() {
       }
       if (covered.length > 0) {
         setCoveredDimensions(covered)
+        covered.forEach(dim => generateDimensionSummary(dim))
       }
 
       {
