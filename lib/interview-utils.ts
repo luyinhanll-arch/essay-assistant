@@ -232,7 +232,7 @@ export async function detectCoverageWithAI(msgs: Message[]) {
       // - conf >= 0.6 from window analysis
       // This prevents false positives when keywords appear in early transition
       // messages before the AI actually starts asking about the dimension.
-      const STRICT_DIMS = new Set(['research', 'motivation', 'plan', 'personal'])
+      const STRICT_DIMS = new Set(['internship', 'research', 'motivation', 'plan', 'personal'])
       const dimMap: Record<string, number> = {}
       if (Array.isArray(data.dimensions)) {
         for (const d of data.dimensions) dimMap[d.key] = d.confidence ?? 0
