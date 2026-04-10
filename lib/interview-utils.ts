@@ -109,11 +109,23 @@ export function findDimStartInHistory(dim: string, msgs: Message[]): number {
   // Fallback: keyword match + must contain a question mark (actual question, not a mention)
   const kw = KEYWORD_MAP[dim]
   if (!kw) return -1
+
+  // For internship/research: only match messages AFTER formal interview starts
+  // (i.e. after [ASKING:academic] appears), to avoid matching the pre-screening question.
+  let formalStartIdx = 0
+  if (dim === 'internship' || dim === 'research') {
+    const academicIdx = msgs.findIndex(m =>
+      m.role === 'assistant' &&
+      /\[ASKING[：:]\s*academic\]/i.test((m as Message & { rawContent?: string }).rawContent ?? m.content)
+    )
+    if (academicIdx >= 0) formalStartIdx = academicIdx
+  }
+
   // Build per-dim keyword patterns for the "other dimensions" check
   const OTHER_DIM_PATTERNS = Object.entries(KEYWORD_MAP)
     .filter(([k]) => k !== dim)
     .map(([, re]) => re)
-  for (let i = 0; i < msgs.length; i++) {
+  for (let i = formalStartIdx; i < msgs.length; i++) {
     const m = msgs[i]
     if (m.role !== 'assistant') continue
     if (!kw.test(m.content) || !/[？?]/.test(m.content)) continue
