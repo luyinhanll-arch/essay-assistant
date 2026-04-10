@@ -160,8 +160,6 @@ export function findExpStartInHistory(expName: string, msgs: Message[]): number 
     ? Array.from({ length: fullNorm.length - 1 }, (_, k) => fullNorm.slice(k, k + 2))
     : []
 
-  // Score a text against the experience name.
-  // Returns 1.0 for exact match, bigram overlap ratio otherwise.
   function score(content: string): number {
     const nc = norm(content)
     if (nc.includes(fullNorm)) return 1.0
@@ -169,19 +167,34 @@ export function findExpStartInHistory(expName: string, msgs: Message[]): number 
     return bigrams.filter(bg => nc.includes(bg)).length / bigrams.length
   }
 
-  // For each AI message, find the next user reply and compute a combined score:
-  //   combined = aiScore * 0.35 + userScore * 0.65
-  // User reply is weighted higher because users naturally use their experience's own name.
-  // Return the AI message index with the highest combined score above minimum threshold.
-  let bestIdx = -1
-  let bestCombined = 0.08
+  // Skip pre-screening phase: only search from [ASKING:academic] onwards.
+  // Experiences are never formally discussed before the formal interview starts.
+  const formalStart = msgs.findIndex(m =>
+    m.role === 'assistant' &&
+    /\[ASKING[：:]\s*academic\]/i.test((m as Message & { rawContent?: string }).rawContent ?? m.content)
+  )
+  const searchFrom = formalStart >= 0 ? formalStart : 0
 
-  for (let i = 0; i < msgs.length; i++) {
+  // Primary: find the FIRST AI message that both asks about this experience (score ≥ 0.3,
+  // contains ？) AND is followed by a substantial user reply (>20 chars).
+  // "First" is correct here — we want the start of detailed discussion, not the highest-scoring
+  // message which could be a later follow-up that happens to mention the name more.
+  for (let i = searchFrom; i < msgs.length; i++) {
     const m = msgs[i]
     if (m.role !== 'assistant') continue
+    if (score(m.content) < 0.3) continue
+    if (!/[？?]/.test(m.content)) continue
+    const nextUser = msgs.slice(i + 1).find(x => x.role === 'user')
+    if (nextUser && nextUser.content.trim().length > 20) return i
+  }
 
+  // Fallback: highest combined (AI + user) score, starting from formal interview.
+  let bestIdx = -1
+  let bestCombined = 0.08
+  for (let i = searchFrom; i < msgs.length; i++) {
+    const m = msgs[i]
+    if (m.role !== 'assistant') continue
     const aiScore = score(m.content)
-
     let userScore = 0
     let userLen = 0
     for (let j = i + 1; j <= Math.min(i + 3, msgs.length - 1); j++) {
@@ -190,18 +203,10 @@ export function findExpStartInHistory(expName: string, msgs: Message[]): number 
       userLen = msgs[j].content.length
       break
     }
-
-    // Skip only when both AI score is negligible AND user reply is very short
-    // (AI score ≥ 0.3 alone is enough evidence even without a long user reply)
     if (aiScore < 0.3 && userLen < 5) continue
-
     const combined = aiScore * 0.35 + userScore * 0.65
-    if (combined > bestCombined) {
-      bestCombined = combined
-      bestIdx = i
-    }
+    if (combined > bestCombined) { bestCombined = combined; bestIdx = i }
   }
-
   return bestIdx
 }
 
