@@ -153,12 +153,20 @@ function SectionCard({
 
 export default function FrameworkPage() {
   const router = useRouter()
-  const { messages, selectedPersona, targetProgram, framework, essayType, wordLimit: storeWordLimit, schoolNotes: storeSchoolNotes, step1Summaries, setFramework, setEssayType, setWordLimit: storeSetWordLimit, setSchoolNotes: storeSetSchoolNotes, setDraft } = useAppStore()
+  const { messages, selectedPersona, targetProgram, framework, essayType, wordLimit: storeWordLimit, schoolNotes: storeSchoolNotes, frameworkGeneratedWith, step1Summaries, setFramework, setEssayType, setWordLimit: storeSetWordLimit, setSchoolNotes: storeSetSchoolNotes, setFrameworkGeneratedWith, setDraft } = useAppStore()
 
   const [step, setStep] = useState<'choose' | 'edit'>(framework.length > 0 ? 'edit' : 'choose')
   const [localEssayType, setLocalEssayType] = useState<EssayType>(essayType)
   const [wordLimit, setWordLimit] = useState(storeWordLimit)
   const [schoolNotes, setSchoolNotes] = useState(storeSchoolNotes)
+
+  // True if current config differs from what the last framework was generated with
+  const isDirty = framework.length === 0 ||
+    !frameworkGeneratedWith ||
+    frameworkGeneratedWith.essayType !== localEssayType ||
+    frameworkGeneratedWith.wordLimit !== wordLimit ||
+    frameworkGeneratedWith.schoolNotes !== schoolNotes ||
+    frameworkGeneratedWith.personaId !== selectedPersona?.id
 
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
@@ -187,6 +195,12 @@ export default function FrameworkPage() {
   }
 
   async function generateFramework() {
+    // If nothing has changed, skip AI and go straight to edit
+    if (!isDirty) {
+      setStep('edit')
+      return
+    }
+
     setAiLoading(true)
     setAiError('')
 
@@ -210,6 +224,12 @@ export default function FrameworkPage() {
         setFramework(data.framework)
         setSections(data.framework)
         setEnabled(data.framework.map(() => true))
+        setFrameworkGeneratedWith({
+          essayType: localEssayType,
+          wordLimit,
+          schoolNotes,
+          personaId: selectedPersona?.id ?? '',
+        })
         setStep('edit')
       } else {
         setAiError('生成失败，请重试')
@@ -295,9 +315,16 @@ export default function FrameworkPage() {
           </div>
           {/* Step 2 */}
           <div className="flex flex-col items-center w-28">
-            <div className={`w-9 h-9 rounded-full text-sm font-bold flex items-center justify-center transition-all duration-300 ${
-              step === 'edit' ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-400'
-            }`}>2</div>
+            {framework.length > 0 && step === 'choose' ? (
+              <button
+                onClick={() => setStep('edit')}
+                className="w-9 h-9 rounded-full bg-stone-100 hover:bg-stone-900 hover:text-white text-stone-400 text-sm font-bold flex items-center justify-center transition-colors"
+              >2</button>
+            ) : (
+              <div className={`w-9 h-9 rounded-full text-sm font-bold flex items-center justify-center transition-all duration-300 ${
+                step === 'edit' ? 'bg-stone-900 text-white' : 'bg-stone-100 text-stone-400'
+              }`}>2</div>
+            )}
             <span className={`mt-2 text-xs font-medium text-center leading-tight ${step === 'edit' ? 'text-stone-800' : 'text-stone-400'}`}>
               调整框架
             </span>
@@ -415,7 +442,7 @@ export default function FrameworkPage() {
                     <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     AI 生成中…
                   </span>
-                ) : `生成 ${localEssayType} 专属框架 →`}
+                ) : isDirty ? `生成 ${localEssayType} 专属框架 →` : `查看已生成框架 →`}
               </button>
               <p className="text-xs text-stone-400 mt-3">
                 {selectedPersona ? `人设：${selectedPersona.title}` : '请先选择人设方向'}{wordLimit.trim() ? ` · 字数限制 ${wordLimit} 词` : ''}{schoolNotes.trim() ? ' · 已加备注' : ''}

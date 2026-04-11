@@ -17,6 +17,7 @@ interface AppStore {
   essayType: EssayType
   wordLimit: string
   schoolNotes: string
+  frameworkGeneratedWith: { essayType: string; wordLimit: string; schoolNotes: string; personaId: string | number } | null
   framework: FrameworkSection[]
   draft: string
   dimensionSummaries: Record<string, string>      // 维度key -> AI总结
@@ -41,6 +42,7 @@ interface AppStore {
   setEssayType: (t: EssayType) => void
   setWordLimit: (w: string) => void
   setSchoolNotes: (n: string) => void
+  setFrameworkGeneratedWith: (cfg: { essayType: string; wordLimit: string; schoolNotes: string; personaId: string | number } | null) => void
   setFramework: (f: FrameworkSection[]) => void
   setDraft: (d: string) => void
   setDimensionSummary: (dimension: string, summary: string) => void
@@ -67,6 +69,7 @@ const initialState = {
   essayType: 'SOP' as EssayType,
   wordLimit: '',
   schoolNotes: '',
+  frameworkGeneratedWith: null,
   framework: [],
   draft: '',
   dimensionSummaries: {},
@@ -114,6 +117,7 @@ export const useAppStore = create<AppStore>()(
       setEssayType: (t) => set({ essayType: t }),
       setWordLimit: (w) => set({ wordLimit: w }),
       setSchoolNotes: (n) => set({ schoolNotes: n }),
+      setFrameworkGeneratedWith: (cfg) => set({ frameworkGeneratedWith: cfg }),
       setFramework: (f) => set({ framework: f }),
       setDraft: (d) => set({ draft: d }),
       setDimensionSummary: (dimension, summary) =>
