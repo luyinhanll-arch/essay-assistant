@@ -56,13 +56,10 @@ export default function InterviewPage() {
   const [isRefreshingDimensions, setIsRefreshingDimensions] = useState(false)
 
 
-  // Wrapper: dimensionMessageIndex (recorded when [ASKING:dim] fires) takes priority
-  // over keyword scanning in findDimStartInHistory, making the button reliable for
-  // all dims including motivation/plan/personal where keywords are fragile.
-  function getDimStart(dim: string): number {
-    // For internship/research: ignore dimensionMessageIndex if it points to a message
-    // before the formal interview starts ([ASKING:academic]), which means it was set
-    // during pre-screening and is the wrong location.
+  const DIM_ORDER = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+
+  // Core computation without ordering constraint.
+  function getDimStartRaw(dim: string): number {
     const formalStart = (['internship', 'research'].includes(dim))
       ? messages.findIndex(m =>
           m.role === 'assistant' &&
@@ -73,20 +70,15 @@ export default function InterviewPage() {
     if (dim in dimensionMessageIndex) {
       const storedIdx = dimensionMessageIndex[dim]
       if (formalStart < 0 || storedIdx >= formalStart) return storedIdx
-      // stored index is before formal interview — fall through to scan
     }
     const found = findDimStartInHistory(dim, messages)
     if (found >= 0) return found
-    // Last-resort: scan rawContent for [ASKING:dim] or [COVERED:dim] tag that may have been
-    // missed by the live parser (e.g. page was refreshed mid-conversation).
     for (let i = Math.max(0, formalStart); i < messages.length; i++) {
       const m = messages[i]
       if (m.role !== 'assistant') continue
       const raw = (m as Message & { rawContent?: string }).rawContent ?? m.content
       if (new RegExp(`\\[(ASKING|COVERED)[：:]\\s*${dim}\\]`, 'i').test(raw)) return i
     }
-    // Final fallback for late-stage dims (motivation/plan/personal): if the dim is covered,
-    // estimate its position as the AI message at ~80% through the conversation.
     const LATE_DIMS = ['motivation', 'plan', 'personal']
     if (LATE_DIMS.includes(dim) && coveredDimensions.includes(dim)) {
       const aiIdxs = messages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0)
@@ -96,6 +88,30 @@ export default function InterviewPage() {
       }
     }
     return -1
+  }
+
+  // Public wrapper: enforces that each dim's position is strictly after the previous dim's.
+  // This prevents mis-estimates (especially for personal) from landing before earlier dims.
+  function getDimStart(dim: string): number {
+    const raw = getDimStartRaw(dim)
+    const dimPos = DIM_ORDER.indexOf(dim)
+    if (dimPos > 0) {
+      // Find the nearest earlier covered/empty dim and ensure we're after it
+      for (let p = dimPos - 1; p >= 0; p--) {
+        const prevDim = DIM_ORDER[p]
+        if (!coveredDimensions.includes(prevDim) && !emptyDimensions.includes(prevDim)) continue
+        const prevRaw = getDimStartRaw(prevDim)
+        if (prevRaw >= 0 && (raw < 0 || raw <= prevRaw)) {
+          // Find the first AI message after prevRaw
+          for (let i = prevRaw + 1; i < messages.length; i++) {
+            if (messages[i].role === 'assistant') return i
+          }
+          return prevRaw + 1
+        }
+        break
+      }
+    }
+    return raw
   }
 
   // Wrapper: expMessageIndex (recorded when [EXP:name] fires) takes priority over

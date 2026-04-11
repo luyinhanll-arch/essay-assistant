@@ -114,7 +114,9 @@ export default function TestPage() {
   const prevIsThinkingRef = useRef(false)
   // ──────────────────────────────────────────────────────────────────────────
 
-  function getDimStart(dim: string): number {
+  const DIM_ORDER = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+
+  function getDimStartRaw(dim: string): number {
     const formalStart = (['internship', 'research'].includes(dim))
       ? messages.findIndex(m =>
           m.role === 'assistant' &&
@@ -128,14 +130,12 @@ export default function TestPage() {
     }
     const found = findDimStartInHistory(dim, messages)
     if (found >= 0) return found
-    // Last-resort: scan rawContent for [ASKING:dim] or [COVERED:dim] tag
     for (let i = Math.max(0, formalStart); i < messages.length; i++) {
       const m = messages[i]
       if (m.role !== 'assistant') continue
       const raw = (m as Message & { rawContent?: string }).rawContent ?? m.content
       if (new RegExp(`\\[(ASKING|COVERED)[：:]\\s*${dim}\\]`, 'i').test(raw)) return i
     }
-    // Final fallback for late-stage dims: estimate position by coverage order
     const LATE_DIMS = ['motivation', 'plan', 'personal']
     if (LATE_DIMS.includes(dim) && coveredDimensions.includes(dim)) {
       const aiIdxs = messages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0)
@@ -145,6 +145,26 @@ export default function TestPage() {
       }
     }
     return -1
+  }
+
+  function getDimStart(dim: string): number {
+    const raw = getDimStartRaw(dim)
+    const dimPos = DIM_ORDER.indexOf(dim)
+    if (dimPos > 0) {
+      for (let p = dimPos - 1; p >= 0; p--) {
+        const prevDim = DIM_ORDER[p]
+        if (!coveredDimensions.includes(prevDim) && !emptyDimensions.includes(prevDim)) continue
+        const prevRaw = getDimStartRaw(prevDim)
+        if (prevRaw >= 0 && (raw < 0 || raw <= prevRaw)) {
+          for (let i = prevRaw + 1; i < messages.length; i++) {
+            if (messages[i].role === 'assistant') return i
+          }
+          return prevRaw + 1
+        }
+        break
+      }
+    }
+    return raw
   }
 
   function getExpStart(expName: string): number {
