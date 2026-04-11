@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, Suspense } from 'react'
+import { flushSync } from 'react-dom'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAppStore } from '@/lib/store'
@@ -150,7 +151,7 @@ function EditorContent() {
         const partial = capturedRange
           ? originalText.slice(0, capturedRange.start) + revised + originalText.slice(capturedRange.end)
           : originalText.replace(capturedQuoteText, revised)
-        setText(partial)
+        flushSync(() => setText(partial))
       }
       const finalText = capturedRange
         ? originalText.slice(0, capturedRange.start) + revised.trim() + originalText.slice(capturedRange.end)
