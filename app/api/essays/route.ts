@@ -1,18 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Pool } from 'pg'
+import { createClient } from '@supabase/supabase-js'
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } })
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+)
 
 // GET /api/essays?token=xxx
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token')
   if (!token) return NextResponse.json({ error: 'missing token' }, { status: 400 })
 
-  const { rows } = await pool.query(
-    'SELECT id, school, program, degree, essay_type, en_text, zh_text, updated_at FROM essays WHERE user_token=$1 ORDER BY updated_at DESC',
-    [token]
-  )
-  return NextResponse.json({ essays: rows })
+  const { data, error } = await supabase
+    .from('essays')
+    .select('id, school, program, degree, essay_type, en_text, zh_text, updated_at')
+    .eq('user_token', token)
+    .order('updated_at', { ascending: false })
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ essays: data })
 }
 
 // POST /api/essays → upsert by user_token + school + essay_type
@@ -22,22 +28,30 @@ export async function POST(req: NextRequest) {
   if (!token || !school) return NextResponse.json({ error: 'missing fields' }, { status: 400 })
 
   const type = essay_type || 'SOP'
-  let rows
-  try {
-    const result = await pool.query(
-      `INSERT INTO essays (user_token, school, program, degree, essay_type, en_text, zh_text, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,now())
-       ON CONFLICT (user_token, school, essay_type)
-       DO UPDATE SET program=$3, degree=$4, en_text=$6, zh_text=$7, updated_at=now()
-       RETURNING *`,
-      [token, school, program ?? null, degree ?? null, type, en_text ?? null, zh_text ?? null]
+
+  const { data, error } = await supabase
+    .from('essays')
+    .upsert(
+      {
+        user_token: token,
+        school,
+        program: program ?? null,
+        degree: degree ?? null,
+        essay_type: type,
+        en_text: en_text ?? null,
+        zh_text: zh_text ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_token,school,essay_type' }
     )
-    rows = result.rows
-  } catch (dbErr) {
-    console.error('[essays POST] DB error:', dbErr)
-    return NextResponse.json({ error: String(dbErr) }, { status: 500 })
+    .select()
+    .single()
+
+  if (error) {
+    console.error('[essays POST] Supabase error:', error)
+    return NextResponse.json({ error: error.message }, { status: 500 })
   }
-  return NextResponse.json({ essay: rows[0] })
+  return NextResponse.json({ essay: data })
 }
 
 // DELETE /api/essays?token=xxx&id=yyy
@@ -46,6 +60,12 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get('id')
   if (!token || !id) return NextResponse.json({ error: 'missing fields' }, { status: 400 })
 
-  await pool.query('DELETE FROM essays WHERE id=$1 AND user_token=$2', [id, token])
+  const { error } = await supabase
+    .from('essays')
+    .delete()
+    .eq('id', id)
+    .eq('user_token', token)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
 }
