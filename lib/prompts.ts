@@ -415,7 +415,7 @@ export function buildInterviewSystemPrompt(
     if (quickInfo.targetMajor) parts.push(`申请专业：${quickInfo.targetMajor}`)
     if (quickInfo.degree) parts.push(`申请学位：${quickInfo.degree}`)
     if (parts.length > 0) {
-      quickInfoBlock = `\n\n## 【申请者基本信息（用户提前填写，可直接引用，无需重复询问已知信息）】\n${parts.join('\n')}\n\n**重要：已知的字段在访谈中不得重复询问。** 开场时用这些信息个性化问候（如"你在${quickInfo.school || '你的学校'}读${quickInfo.major || '你的专业'}，想申请${quickInfo.targetSchool || '目标院校'}——我们来聊聊你的故事"），然后按正常流程推进。进入学术背景维度时，已知的学校/专业/GPA 直接跳过对应问题，从专业课开始追问。`
+      quickInfoBlock = `\n\n## 【申请者基本信息（用户提前填写，可直接引用，无需重复询问已知信息）】\n${parts.join('\n')}\n\n**重要：已知的字段在访谈中不得重复询问。** 开场时用这些信息个性化问候（如"你在${quickInfo.school || '你的学校'}读${quickInfo.major || '你的专业'}，想申请${quickInfo.targetSchool || '目标院校'}——我们来聊聊你的故事"），然后按正常流程推进。进入学术背景维度时，已知的学校/专业/GPA 直接跳过对应问题，从专业课开始追问。\n\n⚠️ **即使目标院校/专业/学位已从基本信息中获知，第一步半（快速确认实习与科研经历）仍然不可跳过。** 开场确认目标后，必须先完成预筛，再进入学术背景。`
     }
   }
 
