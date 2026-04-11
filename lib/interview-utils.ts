@@ -258,7 +258,15 @@ export async function detectCoverageWithAI(msgs: Message[]) {
         if (nowCovered.includes(d)) return false
         if (STRICT_DIMS.has(d)) {
           const conf = dimMap[d] ?? 0
-          return conf >= 0.6 && hasAskingMarker(d)
+          if (conf < 0.6 || !hasAskingMarker(d)) return false
+          // Also require at least one substantial user reply AFTER [ASKING:dim]
+          // to prevent marking covered just because [ASKING:dim] appeared.
+          const askIdx = msgs.findIndex(m =>
+            m.role === 'assistant' &&
+            new RegExp(`\\[ASKING[：:]\\s*${d}\\]`, 'i').test(m.rawContent ?? m.content)
+          )
+          if (askIdx < 0) return false
+          return msgs.slice(askIdx + 1).some(m => m.role === 'user' && m.content.trim().length > 20)
         }
         return true
       })

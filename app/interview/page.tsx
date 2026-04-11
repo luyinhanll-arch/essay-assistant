@@ -299,8 +299,13 @@ export default function InterviewPage() {
       if (covered.length > 0) {
         setCoveredDimensions(covered)
         // Force-regenerate summaries for explicitly [COVERED:] dims so that an early
-        // pre-screening summary (set by detectCoverageWithAI) gets replaced with the
-        // full formal Q&A content now that the dimension is officially complete.
+        // pre-screening summary gets replaced with full formal Q&A content.
+        // Reset generatingSummaries first so the guard doesn't block re-generation.
+        setGeneratingSummaries(prev => {
+          const next = { ...prev }
+          covered.forEach(d => { next[d] = false })
+          return next
+        })
         covered.forEach(dim => generateDimensionSummary(dim))
       }
 

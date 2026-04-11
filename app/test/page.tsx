@@ -350,6 +350,11 @@ export default function TestPage() {
 
       if (covered.length > 0) {
         setCoveredDimensions(covered)
+        setGeneratingSummaries(prev => {
+          const next = { ...prev }
+          covered.forEach(d => { next[d] = false })
+          return next
+        })
         covered.forEach(dim => generateDimensionSummary(dim))
       }
 
