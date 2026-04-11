@@ -51,8 +51,21 @@ export function recoverMissedTagsFromHistory(msgs: Message[]): string[] {
     !(d in askingAt) || askingAt[d] <= emptyAt[d]
   )
 
+  // For internship/research: only recover [COVERED:] tags that appeared AFTER
+  // the formal interview started ([ASKING:academic]). This prevents pre-screening
+  // content from being mistakenly recovered as formal coverage.
+  const academicAskIdx = msgs.findIndex(m =>
+    m.role === 'assistant' &&
+    /\[ASKING[：:]\s*academic\]/i.test(m.rawContent ?? m.content)
+  )
+  const formalStarted = academicAskIdx >= 0
+
   const nowCovered = store.coveredDimensions
-  const newCovered = covered.filter(d => !nowCovered.includes(d))
+  const newCovered = covered.filter(d => {
+    if (nowCovered.includes(d)) return false
+    if ((d === 'internship' || d === 'research') && !formalStarted) return false
+    return true
+  })
   if (newCovered.length > 0) store.setCoveredDimensions(newCovered)
 
   const nowEmpty = store.emptyDimensions
@@ -254,13 +267,21 @@ export async function detectCoverageWithAI(msgs: Message[]) {
       if (Array.isArray(data.dimensions)) {
         for (const d of data.dimensions) dimMap[d.key] = d.confidence ?? 0
       }
+      // For internship/research: formal interview must have started first
+      const formalInterviewStarted = msgs.some(m =>
+        m.role === 'assistant' &&
+        /\[ASKING[：:]\s*academic\]/i.test(m.rawContent ?? m.content)
+      )
+
       const newDims = (data.coveredDimensions as string[]).filter(d => {
         if (nowCovered.includes(d)) return false
         if (STRICT_DIMS.has(d)) {
           const conf = dimMap[d] ?? 0
-          if (conf < 0.6 || !hasAskingMarker(d)) return false
+          if (conf < 0.6) return false
+          // internship/research must not be marked covered before formal interview starts
+          if ((d === 'internship' || d === 'research') && !formalInterviewStarted) return false
+          if (!hasAskingMarker(d)) return false
           // Also require at least one substantial user reply AFTER [ASKING:dim]
-          // to prevent marking covered just because [ASKING:dim] appeared.
           const askIdx = msgs.findIndex(m =>
             m.role === 'assistant' &&
             new RegExp(`\\[ASKING[：:]\\s*${d}\\]`, 'i').test(m.rawContent ?? m.content)
