@@ -1346,7 +1346,8 @@ export default function TestPage() {
                     const isGenerating = generatingSummaries[dim.key]
                     const aiSummary = dimensionSummaries[dim.key]
                     const isExpanded = expandedDimensions.has(dim.key)
-                    const summaryIsEmpty = !isGenerating && aiSummary && /^(无[。.]?|没有[^\n]{0,20}|暂无[^\n]{0,20})$/.test(aiSummary.trim())
+                    const CAN_BE_EMPTY_1 = ['internship', 'research']
+                    const summaryIsEmpty = CAN_BE_EMPTY_1.includes(dim.key) && !isGenerating && aiSummary && /^(无[。.]?|没有[^\n]{0,20}|暂无[^\n]{0,20})$/.test(aiSummary.trim())
                     const isEmpty = emptyDimensions.includes(dim.key) || !!summaryIsEmpty
                     const resolved = done || isEmpty
 
@@ -1441,7 +1442,8 @@ export default function TestPage() {
               const isGenerating = generatingSummaries[dim.key]
               const aiSummary = dimensionSummaries[dim.key]
               const isExpanded = expandedDimensions.has(dim.key)
-              const summaryIsEmpty = !isGenerating && aiSummary && /^(无[。.]?|没有[^\n]{0,20}|暂无[^\n]{0,20})$/.test(aiSummary.trim())
+              const CAN_BE_EMPTY_2 = ['internship', 'research']
+              const summaryIsEmpty = CAN_BE_EMPTY_2.includes(dim.key) && !isGenerating && aiSummary && /^(无[。.]?|没有[^\n]{0,20}|暂无[^\n]{0,20})$/.test(aiSummary.trim())
               const isEmpty = emptyDimensions.includes(dim.key) || !!summaryIsEmpty
               const resolved = done || isEmpty
 

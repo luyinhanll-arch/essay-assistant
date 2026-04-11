@@ -1281,7 +1281,9 @@ export default function InterviewPage() {
                     const isGenerating = generatingSummaries[dim.key]
                     const aiSummary = dimensionSummaries[dim.key]
                     const isExpanded = expandedDimensions.has(dim.key)
-                    const summaryIsEmpty = !isGenerating && aiSummary && /^(无[。.]?|没有[^\n]{0,20}|暂无[^\n]{0,20})$/.test(aiSummary.trim())
+                    // Only internship/research can be truly empty; other dims fall back to emptyDimensions only
+                    const CAN_BE_EMPTY = ['internship', 'research']
+                    const summaryIsEmpty = CAN_BE_EMPTY.includes(dim.key) && !isGenerating && aiSummary && /^(无[。.]?|没有[^\n]{0,20}|暂无[^\n]{0,20})$/.test(aiSummary.trim())
                     const isEmpty = emptyDimensions.includes(dim.key) || !!summaryIsEmpty
                     const resolved = done || isEmpty
 
