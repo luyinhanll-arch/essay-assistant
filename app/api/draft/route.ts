@@ -61,7 +61,7 @@ export async function POST(req: Request) {
   return streamDeepSeek(DRAFT_SYSTEM_PROMPT, [
     {
       role: 'user',
-      content: `IMPORTANT: Write the entire essay in English only. No Chinese characters anywhere in the output.\n\n${typeNote}${programNote}${wordLimitNote}\n## Essay Framework\n${frameworkText}\n\n## Applicant Background Summaries (use as source material)\n${summaryText}`,
+      content: `CRITICAL LANGUAGE RULE: Every single word in the essay must be in English. Do NOT include any Chinese characters (汉字), Japanese, or any non-Latin script anywhere — not even for a single word, brand name, or term like "复盘". If a concept is Chinese-specific, translate or describe it in English.\n\n${typeNote}${programNote}${wordLimitNote}\n## Essay Framework\n${frameworkText}\n\n## Applicant Background Summaries (use as source material)\n${summaryText}\n\nReminder: Output English only. Zero Chinese characters.`,
     },
   ])
 }
