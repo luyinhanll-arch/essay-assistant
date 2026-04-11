@@ -128,11 +128,15 @@ function EditorContent() {
   async function handleQuoteRevise() {
     if (!quoteText || !reviseInput.trim() || isRevising) return
     setIsRevising(true)
+    // Snapshot original text and positions before streaming begins
+    const originalText = text
+    const capturedRange = quoteRange
+    const capturedQuoteText = quoteText
     try {
       const res = await fetch('/api/revise', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ draft: quoteText, instruction: reviseInput, quoteMode: true }),
+        body: JSON.stringify({ draft: capturedQuoteText, instruction: reviseInput, quoteMode: true }),
       })
       if (!res.ok) throw new Error('修改失败')
       const reader = res.body!.getReader()
@@ -142,22 +146,26 @@ function EditorContent() {
         const { done, value } = await reader.read()
         if (done) break
         revised += decoder.decode(value, { stream: true })
+        // Stream into editor: replace the original selection with what's arrived so far
+        const partial = capturedRange
+          ? originalText.slice(0, capturedRange.start) + revised + originalText.slice(capturedRange.end)
+          : originalText.replace(capturedQuoteText, revised)
+        setText(partial)
       }
-      const r = revised.trim()
-      const newText = quoteRange
-        ? text.slice(0, quoteRange.start) + r + text.slice(quoteRange.end)
-        : text.replace(quoteText, r)
-      setText(newText)
-      setDraft(newText)
+      const finalText = capturedRange
+        ? originalText.slice(0, capturedRange.start) + revised.trim() + originalText.slice(capturedRange.end)
+        : originalText.replace(capturedQuoteText, revised.trim())
+      setText(finalText)
+      setDraft(finalText)
       setQuoteText('')
       setQuoteRange(null)
       setReviseInput('')
 
       // Partial ZH update: re-translate only affected paragraphs
       if (showZh && zhText) {
-        const origParas = text.split(/\n\n+/)
-        const qStart = quoteRange ? quoteRange.start : text.indexOf(quoteText)
-        const qEnd = quoteRange ? quoteRange.end : qStart + quoteText.length
+        const origParas = originalText.split(/\n\n+/)
+        const qStart = capturedRange ? capturedRange.start : originalText.indexOf(capturedQuoteText)
+        const qEnd = capturedRange ? capturedRange.end : qStart + capturedQuoteText.length
         let charPos = 0
         const affectedIdxs: number[] = []
         for (let i = 0; i < origParas.length; i++) {
@@ -166,7 +174,7 @@ function EditorContent() {
           charPos += origParas[i].length + 2
         }
         if (affectedIdxs.length > 0) {
-          const newParas = newText.split(/\n\n+/)
+          const newParas = finalText.split(/\n\n+/)
           const zhParas = zhText.split(/\n\n+/)
           await Promise.all(affectedIdxs.map(async (idx) => {
             if (!newParas[idx]) return
