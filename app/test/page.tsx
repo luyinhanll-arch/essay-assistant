@@ -317,6 +317,37 @@ export default function TestPage() {
         safeEmpty.forEach(dim => markDimensionEmpty(dim))
         setCoveredDimensions(safeEmpty)
       }
+
+      // ── Pre-screening fallback: detect from user reply if AI forgot [EMPTY:] ──
+      {
+        const allMsgs = messagesRef.current
+        const formalStarted = allMsgs.some(m =>
+          m.role === 'assistant' &&
+          /\[ASKING[：:]\s*academic\]/i.test(m.rawContent ?? m.content)
+        )
+        if (!formalStarted) {
+          const s = useAppStore.getState()
+          const PRESCREEN_KW = /有没有.*实习|有没有.*科研|正式实习|正式的科研|正式.*实验室|课题组/
+          const lastAI = [...allMsgs].reverse().find(m => m.role === 'assistant')
+          if (lastAI && PRESCREEN_KW.test(lastAI.rawContent ?? lastAI.content)) {
+            const lastUser = msgs[msgs.length - 1]
+            if (lastUser?.role === 'user') {
+              const u = lastUser.content
+              const noInternship = /没有.*实习|实习.*没有|没有正式实习|不.*实习|没.*实习过/.test(u)
+              const noResearch = /没有.*科研|科研.*没有|没有正式.*科研|没.*做过.*科研|没.*加入.*实验室|没.*课题/.test(u)
+              if (noInternship && !s.emptyDimensions.includes('internship') && !s.coveredDimensions.includes('internship')) {
+                s.markDimensionEmpty('internship')
+                s.setCoveredDimensions(['internship'])
+              }
+              if (noResearch && !s.emptyDimensions.includes('research') && !s.coveredDimensions.includes('research')) {
+                s.markDimensionEmpty('research')
+                s.setCoveredDimensions(['research'])
+              }
+            }
+          }
+        }
+      }
+
       if (covered.length > 0) {
         setCoveredDimensions(covered)
         covered.forEach(dim => generateDimensionSummary(dim))
