@@ -153,12 +153,12 @@ function SectionCard({
 
 export default function FrameworkPage() {
   const router = useRouter()
-  const { messages, selectedPersona, targetProgram, framework, essayType, step1Summaries, setFramework, setEssayType, setWordLimit: storeSetWordLimit, setDraft } = useAppStore()
+  const { messages, selectedPersona, targetProgram, framework, essayType, wordLimit: storeWordLimit, schoolNotes: storeSchoolNotes, step1Summaries, setFramework, setEssayType, setWordLimit: storeSetWordLimit, setSchoolNotes: storeSetSchoolNotes, setDraft } = useAppStore()
 
   const [step, setStep] = useState<'choose' | 'edit'>(framework.length > 0 ? 'edit' : 'choose')
   const [localEssayType, setLocalEssayType] = useState<EssayType>(essayType)
-  const [wordLimit, setWordLimit] = useState('')
-  const [schoolNotes, setSchoolNotes] = useState('')
+  const [wordLimit, setWordLimit] = useState(storeWordLimit)
+  const [schoolNotes, setSchoolNotes] = useState(storeSchoolNotes)
 
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
@@ -246,7 +246,6 @@ export default function FrameworkPage() {
 
     setGenerating(true)
     setFramework(activeSections)
-    storeSetWordLimit(wordLimit.trim())
     setDraft('')
 
     router.push('/editor?generating=1')
@@ -387,7 +386,7 @@ export default function FrameworkPage() {
                   min={100}
                   max={5000}
                   value={wordLimit}
-                  onChange={(e) => setWordLimit(e.target.value)}
+                  onChange={(e) => { setWordLimit(e.target.value); storeSetWordLimit(e.target.value) }}
                   placeholder="500"
                   className="w-28 bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-700 placeholder-stone-400 focus:outline-none focus:border-stone-400 transition-colors"
                 />
@@ -396,7 +395,7 @@ export default function FrameworkPage() {
 
               <textarea
                 value={schoolNotes}
-                onChange={(e) => setSchoolNotes(e.target.value)}
+                onChange={(e) => { setSchoolNotes(e.target.value); storeSetSchoolNotes(e.target.value) }}
                 placeholder="其他备注，如：希望申请者说明研究兴趣；不需要列举所有经历…"
                 rows={2}
                 className="w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-3 text-sm text-stone-700 placeholder-stone-400 resize-none focus:outline-none focus:border-stone-400 transition-colors"
