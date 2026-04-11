@@ -90,6 +90,8 @@ function EditorContent() {
   // Bilingual state
   const [showZh, setShowZh] = useState(false)
   const [zhText, setZhText] = useState('')
+  const zhTextRef = useRef(zhText)
+  const showZhRef = useRef(showZh)
   const [isTranslating, setIsTranslating] = useState(false)
   const [zhPanelWidth, setZhPanelWidth] = useState(320)
   const zhDragRef = useRef<{ startX: number; startW: number } | null>(null)
@@ -259,6 +261,10 @@ function EditorContent() {
     }
   }, [editingEnIdx])
 
+  // Keep refs in sync so async callbacks always read the latest value
+  zhTextRef.current = zhText
+  showZhRef.current = showZh
+
   const enSentParas = parseEnSents(text)
   const zhSentParas = parseZhSents(zhText)
 
@@ -349,7 +355,8 @@ function EditorContent() {
 
   /** Re-translate only the paragraphs at the given indices and patch zhText */
   async function retranslateParas(newParas: string[], changedIdxs: number[]) {
-    const zhParas = zhText.split(/\n\n+/)
+    // Use ref to get the latest zhText even after flushSync re-renders
+    const zhParas = zhTextRef.current.split(/\n\n+/)
     await Promise.all(changedIdxs.map(async (idx) => {
       if (!newParas[idx]) return
       try {
@@ -406,8 +413,8 @@ function EditorContent() {
         setDraft(finalText)
         setReviseInput('')
         // Only re-translate the single revised paragraph
-        if (showZh) {
-          if (zhText) {
+        if (showZhRef.current) {
+          if (zhTextRef.current) {
             await retranslateParas(finalParas, [paraIdx])
           } else {
             translate(finalText)
@@ -451,8 +458,8 @@ function EditorContent() {
         if ((oldParas[i] ?? '') !== (newParas[i] ?? '')) changed.add(i)
       }
       // Only re-translate changed paragraphs
-      if (showZh) {
-        if (zhText && changed.size > 0 && changed.size < newParas.length) {
+      if (showZhRef.current) {
+        if (zhTextRef.current && changed.size > 0) {
           await retranslateParas(newParas, [...changed])
         } else {
           translate(fullText)
