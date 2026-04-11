@@ -347,6 +347,26 @@ function EditorContent() {
     return idx
   }
 
+  /** Re-translate only the paragraphs at the given indices and patch zhText */
+  async function retranslateParas(newParas: string[], changedIdxs: number[]) {
+    const zhParas = zhText.split(/\n\n+/)
+    await Promise.all(changedIdxs.map(async (idx) => {
+      if (!newParas[idx]) return
+      try {
+        const tr = await fetch('/api/translate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: newParas[idx] }),
+        })
+        if (tr.ok) {
+          const data = await tr.json()
+          if (data.translation?.trim()) zhParas[idx] = data.translation.trim()
+        }
+      } catch {}
+    }))
+    setZhText(zhParas.join('\n\n'))
+  }
+
   async function handleRevise() {
     const instruction = reviseInput.trim()
     if (!instruction || isRevising) return
@@ -378,14 +398,21 @@ function EditorContent() {
           streamedPara += decoder.decode(value, { stream: true })
           const newParas = [...paragraphs]
           newParas[paraIdx] = streamedPara
-          setText(newParas.join('\n\n'))
+          flushSync(() => setText(newParas.join('\n\n')))
         }
         const finalParas = [...paragraphs]
         finalParas[paraIdx] = streamedPara
         const finalText = finalParas.join('\n\n')
         setDraft(finalText)
         setReviseInput('')
-        if (showZh) translate(finalText)
+        // Only re-translate the single revised paragraph
+        if (showZh) {
+          if (zhText) {
+            await retranslateParas(finalParas, [paraIdx])
+          } else {
+            translate(finalText)
+          }
+        }
         setAnimatingParas(new Set([paraIdx]))
         setShowParaView(true)
         setTimeout(() => { setShowParaView(false); setAnimatingParas(new Set()) }, 2500)
@@ -413,16 +440,23 @@ function EditorContent() {
         const { done, value } = await reader.read()
         if (done) break
         fullText += decoder.decode(value, { stream: true })
-        setText(fullText)
+        flushSync(() => setText(fullText))
       }
       setDraft(fullText)
       setReviseInput('')
-      if (showZh) translate(fullText)
       const oldParas = prevTextRef.current.split(/\n\n+/).filter(p => p.trim())
       const newParas = fullText.split(/\n\n+/).filter(p => p.trim())
       const changed = new Set<number>()
       for (let i = 0; i < Math.max(oldParas.length, newParas.length); i++) {
         if ((oldParas[i] ?? '') !== (newParas[i] ?? '')) changed.add(i)
+      }
+      // Only re-translate changed paragraphs
+      if (showZh) {
+        if (zhText && changed.size > 0 && changed.size < newParas.length) {
+          await retranslateParas(newParas, [...changed])
+        } else {
+          translate(fullText)
+        }
       }
       if (changed.size > 0 && changed.size < newParas.length) {
         setAnimatingParas(changed)
