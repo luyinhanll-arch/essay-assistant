@@ -5,7 +5,36 @@
  */
 
 import { useAppStore } from '@/lib/store'
-import type { Message } from '@/lib/types'
+import type { Message, InterviewProgressEvent } from '@/lib/types'
+import { extractPreScreenAvailability } from '@/lib/interview-progress'
+
+export const NO_CV_DIMENSION_ORDER = [
+  'academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal',
+] as const
+
+/**
+ * Keep no-CV dimension state as one contiguous interview sequence.  A model may
+ * mention (or even tag) a later topic while an earlier topic is still open; that
+ * must never light the later sidebar card or let the server skip ahead.
+ */
+export function keepSequentialDimensions(
+  candidates: string[],
+  alreadyCovered: string[],
+  emptyDimensions: string[],
+  deferredDimensions: string[] = [],
+): string[] {
+  const candidateSet = new Set(candidates)
+  const resolved = new Set([...alreadyCovered, ...emptyDimensions, ...deferredDimensions])
+  const accepted: string[] = []
+
+  for (const dimension of NO_CV_DIMENSION_ORDER) {
+    if (resolved.has(dimension)) continue
+    if (!candidateSet.has(dimension)) break
+    accepted.push(dimension)
+    resolved.add(dimension)
+  }
+  return accepted
+}
 
 // ── Tag recovery ───────────────────────────────────────────────────────────────
 
@@ -17,6 +46,7 @@ import type { Message } from '@/lib/types'
  */
 export function recoverMissedTagsFromHistory(msgs: Message[]): string[] {
   const store = useAppStore.getState()
+  const explicitAvailability = extractPreScreenAvailability(msgs)
   const covered: string[] = []
   // Track per-dim: { emptyIdx, askingIdx } to resolve ASKING overriding EMPTY
   const emptyAt: Record<string, number> = {}   // dim → message index where [EMPTY:dim] appeared
@@ -47,9 +77,10 @@ export function recoverMissedTagsFromHistory(msgs: Message[]): string[] {
 
   // A dim is truly empty only if [EMPTY:dim] was NOT followed by a later [ASKING:dim]
   // (which would mean the AI reconsidered and started asking about it anyway)
-  const empty = Object.keys(emptyAt).filter(d =>
-    !(d in askingAt) || askingAt[d] <= emptyAt[d]
-  )
+  const empty = Object.keys(emptyAt).filter(d => {
+    if ((d === 'research' || d === 'internship') && explicitAvailability[d] === 'yes') return false
+    return !(d in askingAt) || askingAt[d] <= emptyAt[d]
+  })
 
   // For internship/research: only recover [COVERED:] tags that appeared AFTER
   // the formal interview started ([ASKING:academic]). This prevents pre-screening
@@ -61,21 +92,34 @@ export function recoverMissedTagsFromHistory(msgs: Message[]): string[] {
   const formalStarted = academicAskIdx >= 0
 
   const nowCovered = store.coveredDimensions
-  const newCovered = covered.filter(d => {
+  let newCovered = covered.filter(d => {
     if (nowCovered.includes(d)) return false
     if ((d === 'internship' || d === 'research') && !formalStarted) return false
     return true
   })
+  if (!store.cvText) {
+    newCovered = keepSequentialDimensions(
+      newCovered, nowCovered, store.emptyDimensions, store.deferredDimensions,
+    )
+  }
   if (newCovered.length > 0) store.setCoveredDimensions(newCovered)
 
   const nowEmpty = store.emptyDimensions
+  // Explicit user availability is stronger evidence than any model-generated
+  // EMPTY tag, including one restored from persisted raw history.
+  for (const dimension of ['research', 'internship'] as const) {
+    if (explicitAvailability[dimension] === 'yes' && store.emptyDimensions.includes(dimension)) {
+      store.removeFromEmpty(dimension)
+    }
+  }
   // Also remove dims from emptyDimensions if [ASKING:dim] came after [EMPTY:dim]
   const overridden = store.emptyDimensions.filter(d =>
     d in askingAt && d in emptyAt && askingAt[d] > emptyAt[d]
   )
   if (overridden.length > 0) overridden.forEach(d => store.removeFromEmpty(d))
 
-  const newEmpty = empty.filter(d => !nowEmpty.includes(d))
+  const currentEmptyAfterAvailability = useAppStore.getState().emptyDimensions
+  const newEmpty = empty.filter(d => !currentEmptyAfterAvailability.includes(d))
   if (newEmpty.length > 0) {
     newEmpty.forEach(d => store.markDimensionEmpty(d))
     store.setCoveredDimensions(newEmpty)
@@ -233,8 +277,8 @@ export function findExpStartInHistory(expName: string, msgs: Message[]): number 
  *  - AI analysis windows are extracted correctly even for early dimensions
  *    (research, motivation, plan) that may be 30-60+ messages in the past.
  */
-export async function detectCoverageWithAI(msgs: Message[]) {
-  if (useAppStore.getState().coveredDimensions.length >= 7) return
+export async function detectCoverageWithAI(msgs: Message[], options: { reconcile?: boolean } = {}) {
+  if (!options.reconcile && useAppStore.getState().coveredDimensions.length >= 7) return
   if (!msgs.some(m => m.role === 'user')) return
 
   try {
@@ -243,7 +287,9 @@ export async function detectCoverageWithAI(msgs: Message[]) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: msgs,          // full history — parseTagsFromConversation is O(n) regex, fast
-        alreadyCovered: useAppStore.getState().coveredDimensions,
+        // Reconciliation must rebuild from conversation evidence instead of
+        // preserving a possibly corrupted cached completion set.
+        alreadyCovered: options.reconcile ? [] : useAppStore.getState().coveredDimensions,
       }),
     })
     if (!res.ok) return
@@ -254,15 +300,48 @@ export async function detectCoverageWithAI(msgs: Message[]) {
       msgs.some(m => m.role === 'assistant' &&
         new RegExp(`\\[ASKING[：:]\\s*${d}\\]`, 'i').test(m.rawContent ?? m.content))
 
+    if (options.reconcile && Array.isArray(data.dimensions)) {
+      const state = useAppStore.getState()
+      const reconciledEmpty = data.dimensions
+        .filter((dimension: { key: string; empty?: boolean; confidence?: number }) =>
+          dimension.empty && (dimension.confidence ?? 0) >= 0.6)
+        .map((dimension: { key: string }) => dimension.key)
+      const candidateCovered = data.dimensions
+        .filter((dimension: { key: string; covered?: boolean; empty?: boolean; confidence?: number }) =>
+          dimension.covered && !dimension.empty && (dimension.confidence ?? 0) >= 0.6)
+        .map((dimension: { key: string }) => dimension.key)
+      const reconciledCovered = state.cvText
+        ? candidateCovered
+        : keepSequentialDimensions(
+            candidateCovered, [], reconciledEmpty, state.deferredDimensions,
+          )
+      const candidateActive = typeof data.activeDimension === 'string'
+        ? data.activeDimension
+        : null
+      const activePosition = candidateActive
+        ? NO_CV_DIMENSION_ORDER.indexOf(candidateActive as typeof NO_CV_DIMENSION_ORDER[number])
+        : -1
+      const activeIsValid = candidateActive !== null && activePosition >= 0 &&
+        !reconciledEmpty.includes(candidateActive) &&
+        NO_CV_DIMENSION_ORDER.slice(0, activePosition).every(previous =>
+          reconciledCovered.includes(previous) || reconciledEmpty.includes(previous) ||
+          state.deferredDimensions.includes(previous))
+      state.syncInterviewProgress({
+        activeDimension: activeIsValid ? candidateActive : null,
+        coveredDimensions: reconciledCovered,
+        emptyDimensions: reconciledEmpty,
+      })
+      return data
+    }
+
     if (data.coveredDimensions?.length > 0) {
       const nowCovered = useAppStore.getState().coveredDimensions
-      // For strict dims (research/motivation/plan/personal):
-      // Strict dims (research/motivation/plan/personal) require BOTH:
+      // Strict dimensions require an explicit topic opening and a substantive reply.
       // - [ASKING:dim] marker present (AI explicitly opened the topic), AND
       // - conf >= 0.6 from window analysis
       // This prevents false positives when keywords appear in early transition
       // messages before the AI actually starts asking about the dimension.
-      const STRICT_DIMS = new Set(['internship', 'research', 'motivation', 'plan', 'personal'])
+      const STRICT_DIMS = new Set(['project', 'internship', 'research', 'motivation', 'plan', 'personal'])
       const dimMap: Record<string, number> = {}
       if (Array.isArray(data.dimensions)) {
         for (const d of data.dimensions) dimMap[d.key] = d.confidence ?? 0
@@ -273,7 +352,7 @@ export async function detectCoverageWithAI(msgs: Message[]) {
         /\[ASKING[：:]\s*academic\]/i.test(m.rawContent ?? m.content)
       )
 
-      const newDims = (data.coveredDimensions as string[]).filter(d => {
+      let newDims = (data.coveredDimensions as string[]).filter(d => {
         if (nowCovered.includes(d)) return false
         if (STRICT_DIMS.has(d)) {
           const conf = dimMap[d] ?? 0
@@ -291,6 +370,15 @@ export async function detectCoverageWithAI(msgs: Message[]) {
         }
         return true
       })
+      const current = useAppStore.getState()
+      if (!current.cvText) {
+        newDims = keepSequentialDimensions(
+          newDims,
+          current.coveredDimensions,
+          current.emptyDimensions,
+          current.deferredDimensions,
+        )
+      }
       if (newDims.length > 0) {
         useAppStore.getState().setCoveredDimensions(newDims)
       }
@@ -370,6 +458,7 @@ export function parseAIMessage(raw: string): {
   deferred: string[]
   asking: string[]
   exp: string[]
+  expDone: string[]
   complete: boolean
   target: string | null
 } {
@@ -379,6 +468,7 @@ export function parseAIMessage(raw: string): {
   let deferred: string[] = []
   let asking: string[] = []
   let exp: string[] = []
+  let expDone: string[] = []
   let complete = false
   let target: string | null = null
 
@@ -414,6 +504,14 @@ export function parseAIMessage(raw: string): {
     asking = askingMatches.flatMap(m => m[1].split(',').map((s) => s.trim()).filter(Boolean))
     clean = clean.replace(/\[ASKING[：:][^\]]*\]/g, '').trim()
   }
+  const expDoneMatches = [...clean.matchAll(/\[EXP_DONE[：:]\s*([^\]]+)\]/g)]
+  if (expDoneMatches.length > 0) {
+    expDone = expDoneMatches.map(m => m[1].trim()).filter(Boolean)
+    clean = clean.replace(/\[EXP_DONE[：:][^\]]*\]/g, '').trim()
+  }
+  // Relevance metadata is persisted in rawContent for server-side counting but
+  // must never be shown in the chat UI.
+  clean = clean.replace(/\[EXP_VALUE[：:]\s*[^\]]+\]/g, '').trim()
   const expMatches = [...clean.matchAll(/\[EXP[：:]\s*([^\]]+)\]/g)]
   if (expMatches.length > 0) {
     exp = expMatches.map(m => m[1].trim()).filter(Boolean)
@@ -423,5 +521,31 @@ export function parseAIMessage(raw: string): {
     complete = true
     clean = clean.replace('[INTERVIEW_COMPLETE]', '').trim()
   }
-  return { clean, covered, empty, deferred, asking, exp, complete, target }
+  return { clean, covered, empty, deferred, asking, exp, expDone, complete, target }
+}
+
+/** Convert hidden model tags into the only events allowed to mutate v2 progress. */
+export function buildInterviewProgressEvents(parsed: {
+  covered: string[]
+  empty: string[]
+  deferred: string[]
+  asking: string[]
+  complete: boolean
+}): InterviewProgressEvent[] {
+  const valid = new Set(['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal'])
+  const events: InterviewProgressEvent[] = []
+  const resolvedThisTurn = new Set([
+    ...parsed.covered.filter(dim => valid.has(dim)),
+    ...parsed.empty.filter(dim => valid.has(dim)),
+  ])
+  parsed.covered.filter(dim => valid.has(dim)).forEach(dimension =>
+    events.push({ type: 'dimension_completed', dimension }))
+  parsed.empty.filter(dim => valid.has(dim)).forEach(dimension =>
+    events.push({ type: 'dimension_empty', dimension }))
+  parsed.deferred.filter(dim => valid.has(dim)).forEach(dimension =>
+    events.push({ type: 'dimension_deferred', dimension }))
+  parsed.asking.filter(dim => valid.has(dim) && !resolvedThisTurn.has(dim)).forEach(dimension =>
+    events.push({ type: 'dimension_started', dimension }))
+  if (parsed.complete) events.push({ type: 'interview_completed' })
+  return events
 }

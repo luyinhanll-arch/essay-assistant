@@ -102,12 +102,14 @@ export default function OnboardingPage() {
 
   function handleStart() {
     const cv = uploadedFile ? parsedText : pasteText
+    const hasQuickInfo = Object.values(quickInfo).some(v => v.trim())
+    if (!cv.trim() && !hasQuickInfo) return
+
     resetInterview()
     setCvText(cv.trim())
     // Save quick info only when no CV provided and at least one field filled
     if (!cv.trim()) {
-      const hasQuickInfo = Object.values(quickInfo).some(v => v.trim())
-      setQuickInfo(hasQuickInfo ? quickInfo : null)
+      setQuickInfo(quickInfo)
     } else {
       setQuickInfo(null)
     }
@@ -116,6 +118,8 @@ export default function OnboardingPage() {
 
   const isProcessing = step === 'parsing' || step === 'analyzing'
   const hasContent = uploadedFile ? step === 'done' : !!pasteText.trim()
+  const hasQuickInfo = Object.values(quickInfo).some(v => v.trim())
+  const canStart = hasContent || hasQuickInfo
   const icon = uploadedFile ? fileIcon(uploadedFile.name) : null
   const statusLabel = step === 'parsing' ? '正在提取文本...' : step === 'analyzing' ? '正在分析简历...' : step === 'done' ? '分析完成，点击预览' : ''
 
@@ -177,14 +181,16 @@ export default function OnboardingPage() {
 
         {/* Analysis outline */}
         {analysis && (() => {
-          // Parse entries: each entry starts with "经历名称：" followed by "深挖原因："
-          const entries: { name: string; reason: string }[] = []
+          // Parse entries: each entry contains name, optional type, and reason.
+          const entries: { name: string; type: string; reason: string }[] = []
           const lines = analysis.split('\n').map(l => l.trim()).filter(Boolean)
-          let cur: { name: string; reason: string } | null = null
+          let cur: { name: string; type: string; reason: string } | null = null
           for (const line of lines) {
             if (line.startsWith('经历名称：') || line.startsWith('经历名称:')) {
               if (cur) entries.push(cur)
-              cur = { name: line.replace(/^经历名称[：:]/, '').trim(), reason: '' }
+              cur = { name: line.replace(/^经历名称[：:]/, '').trim(), type: '', reason: '' }
+            } else if ((line.startsWith('经历类型：') || line.startsWith('经历类型:')) && cur) {
+              cur.type = line.replace(/^经历类型[：:]/, '').trim()
             } else if ((line.startsWith('深挖原因：') || line.startsWith('深挖原因:')) && cur) {
               cur.reason = line.replace(/^深挖原因[：:]/, '').trim()
             } else if (cur && cur.reason) {
@@ -206,7 +212,10 @@ export default function OnboardingPage() {
                       {i + 1}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-stone-800 mb-1">{entry.name}</p>
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="text-sm font-medium text-stone-800">{entry.name}</p>
+                        {entry.type && <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500">{entry.type}</span>}
+                      </div>
                       <p className="text-xs text-stone-500 leading-relaxed">{entry.reason}</p>
                     </div>
                   </div>
@@ -300,16 +309,10 @@ export default function OnboardingPage() {
           </div>
         )}
 
-        <div className="flex items-center justify-between mt-4">
-          <button
-            onClick={() => { resetInterview(); setCvText(''); setQuickInfo(null); router.push('/interview') }}
-            className="text-sm text-stone-400 hover:text-stone-600 transition-colors"
-          >
-            跳过，直接开始
-          </button>
+        <div className="flex items-center justify-end mt-4">
           <button
             onClick={handleStart}
-            disabled={isProcessing}
+            disabled={isProcessing || !canStart}
             className="bg-stone-900 hover:bg-stone-800 disabled:opacity-50 text-white text-sm font-medium px-6 py-2.5 rounded-xl transition-colors"
           >
             {hasContent ? '带上简历开始访谈 →' : '开始访谈 →'}

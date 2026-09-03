@@ -1,5 +1,6 @@
 import { callDeepSeek } from '@/lib/deepseek'
 import type { Message } from '@/lib/types'
+import { extractPreScreenAvailability } from '@/lib/interview-progress'
 
 const ALL_DIMS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal'] as const
 type DimKey = typeof ALL_DIMS[number]
@@ -20,15 +21,18 @@ const DIM_LABELS: Record<DimKey, string> = {
 const DIM_QUESTION_PATTERNS: Record<DimKey, string[]> = {
   academic:   ['本科.*学校', '学的什么专业', 'gpa|成绩|绩点|排名', '毕业论文|毕设', '学术表现|学习情况'],
   research:   ['有没有.*科研', '帮.*老师.*课题', '加入过.*实验室', '参与过.*研究', '做过.*科研'],
-  internship: ['有没有.*实习', '做过.*实习.*吗', '实习.*经历.*吗', '做过.*兼职', 'ta|助教.*经历'],
-  project:    ['项目经历', '做过.*项目', '有.*项目', '聊聊.*项目', '课程.*项目|课程作业|大作业|课程设计', '参加过.*比赛|竞赛', '个人项目|课外项目'],
-  motivation: ['什么时候.*感兴趣', '为什么.*申请|为什么想.*出来', '是什么.*让你决定', '申请.*这个.*专业|选择.*这个.*方向'],
-  plan:       ['毕业.*之后.*想|毕业后.*想', '未来.*想做|未来.*打算', '职业.*方向|职业.*目标', '有没有想过.*规划'],
-  personal:   ['印象深刻', '成长了很多|让你成长', '改变了.*想法', '你有.*什么.*特点|发现你.*特点'],
+  internship: ['有没有.*实习', '做过.*实习.*吗', '实习.*经历.*吗', '接下来.*实习', '第[一二两].*段.*实习', '实习.*哪家公司', '聊.*实习', '做过.*兼职', 'ta|助教.*经历'],
+  // A mere mention of “课程作业” during academic discussion is not a project
+  // opening. Require an explicit request to describe a concrete project/task.
+  project:    ['接下来.*项目经历', '现在.*聊.*项目', '单独.*聊.*项目', '课程.*(?:项目|设计).*(?:哪|具体|介绍|讲讲)', '哪(?:一|个|项).*大作业', '课程之外.*项目|课外项目|个人项目.*(?:做过|介绍|讲讲)', '参加过.*比赛|竞赛'],
+  motivation: ['什么时候.*感兴趣', '为什么.*申请|为什么想.*出来', '是什么.*让你决定', '申请.*这个.*专业|选择.*这个.*方向', '对.*方向.*感受.*变化|更确定.*想做', '为什么是.*香港|香港.*吸引'],
+  plan:       ['毕业.*之后.*想|毕业后.*想', '未来.*想做|未来.*打算', '职业.*方向|职业.*目标', '未来的职业方向', '有没有想过.*规划'],
+  personal:   ['印象深刻', '成长了很多|让你成长', '改变了.*想法', '你有.*什么.*特点|发现你.*特点', '有没有意识到.*特点|你自己.*意识到'],
 }
 
 // research/motivation/plan/personal 使用"弱"关键词，匹配时须附加问号检测
 const QUESTION_MARK_REQUIRED_DIMS = new Set<DimKey>(['research', 'motivation', 'plan', 'personal'])
+const messageSource = (message: Message) => message.rawContent ?? message.content
 
 /**
  * 第一步：直接从对话中解析已有的 [COVERED]、[EMPTY]、[ASKING] 标记
@@ -41,7 +45,12 @@ function parseTagsFromConversation(messages: Message[]) {
 
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue
-    const c = msg.content
+    const c = messageSource(msg)
+
+    if (msg.questionDimension && ALL_DIMS.includes(msg.questionDimension as DimKey) &&
+        !asked.includes(msg.questionDimension)) {
+      asked.push(msg.questionDimension)
+    }
 
     // [COVERED:dim1,dim2]
     const covMatch = c.match(/\[COVERED[：:]\s*([^\]]+)\]/gi)
@@ -92,8 +101,9 @@ function extractDimWindow(
   // 优先用 [ASKING:dim] 标记定位
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
-    if (msg.role === 'assistant' &&
-        new RegExp(`\\[ASKING[：:]\\s*${dimKey}\\]`, 'i').test(msg.content)) {
+    if (msg.role === 'assistant' && (
+        msg.questionDimension === dimKey ||
+        new RegExp(`\\[ASKING[：:]\\s*${dimKey}\\]`, 'i').test(messageSource(msg)))) {
       startIdx = i
       break
     }
@@ -105,7 +115,7 @@ function extractDimWindow(
     const needsQ = QUESTION_MARK_REQUIRED_DIMS.has(dimKey as DimKey)
     outer: for (let i = 0; i < messages.length; i++) {
       if (messages[i].role === 'assistant') {
-        const c = messages[i].content
+        const c = messageSource(messages[i])
         if (needsQ && !/[？?]/.test(c)) continue
         for (const p of patterns) {
           if (new RegExp(p, 'i').test(c)) {
@@ -123,9 +133,10 @@ function extractDimWindow(
   let endIdx = messages.length
   for (let i = startIdx + 1; i < messages.length; i++) {
     if (messages[i].role === 'assistant') {
-      const askMatch = messages[i].content.match(/\[ASKING[：:]\s*([^\]]+)\]/i)
-      if (askMatch) {
-        const nextDim = askMatch[1].trim()
+      const metadataDimension = messages[i].questionDimension
+      const askMatch = messageSource(messages[i]).match(/\[ASKING[：:]\s*([^\]]+)\]/i)
+      if (metadataDimension || askMatch) {
+        const nextDim = metadataDimension || askMatch![1].trim()
         if (nextDim !== dimKey) {
           endIdx = i
           break
@@ -137,7 +148,7 @@ function extractDimWindow(
   const window = messages.slice(startIdx, endIdx)
   const questions = window
     .filter(m => m.role === 'assistant')
-    .map(m => m.content.replace(/\[[^\]]+\]/g, '').trim())
+    .map(m => messageSource(m).replace(/\[[^\]]+\]/g, '').trim())
     .filter(Boolean)
   const answers = window
     .filter(m => m.role === 'user')
@@ -248,6 +259,18 @@ export async function POST(req: Request) {
     const allCovered = Array.from(new Set([...alreadyCovered, ...tagData.covered]))
     const allEmpty   = Array.from(new Set([...tagData.empty]))
 
+    // Use the same clause-aware parser as the live interview. This prevents
+    // “有两段实习，没有科研” from negating both dimensions during calibration.
+    const availability = extractPreScreenAvailability(messages)
+    for (const dimension of ['research', 'internship'] as const) {
+      if (availability[dimension] === 'no' && !allEmpty.includes(dimension)) {
+        allEmpty.push(dimension)
+      } else if (availability[dimension] === 'yes') {
+        const emptyIndex = allEmpty.indexOf(dimension)
+        if (emptyIndex >= 0) allEmpty.splice(emptyIndex, 1)
+      }
+    }
+
     // ── 第二步：找出"已问到但还没标记"的维度，提取其问答窗口 ────────────────
     // 已问到 = ASKING 标记存在，或能用关键词匹配到顾问的提问
     const askedDims = new Set<string>(tagData.asked)
@@ -259,9 +282,10 @@ export async function POST(req: Request) {
       const needsQ = QUESTION_MARK_REQUIRED_DIMS.has(dim)
       for (const msg of messages) {
         if (msg.role !== 'assistant') continue
-        if (needsQ && !/[？?]/.test(msg.content)) continue
+        const source = messageSource(msg)
+        if (needsQ && !/[？?]/.test(source)) continue
         for (const p of patterns) {
-          if (new RegExp(p, 'i').test(msg.content)) {
+          if (new RegExp(p, 'i').test(source)) {
             askedDims.add(dim)
             break
           }
@@ -294,6 +318,17 @@ export async function POST(req: Request) {
       const fromTag     = allCovered.includes(dim)
       const fromEmpty   = allEmpty.includes(dim)
       const ai          = aiResults[dim as DimKey]
+
+      // Explicit availability answers outrank both old tags and AI window
+      // classification. Calibration must never turn “有实习，没有科研” into
+      // the opposite result because a broad/overlapping window was analyzed.
+      if ((dim === 'research' || dim === 'internship') && availability[dim] === 'no') {
+        return {
+          key: dim, label: DIM_LABELS[dim],
+          covered: true, empty: true,
+          confidence: 0.99, evidence: '预筛回答明确表示没有该类经历', summary: '',
+        }
+      }
 
       // 已有标记 → 直接用标记结果（最高优先级）
       if (fromTag) {
@@ -336,7 +371,34 @@ export async function POST(req: Request) {
       .filter(d => d.covered && d.confidence >= 0.6)
       .map(d => d.key)
 
-    return Response.json({ dimensions, coveredDimensions, success: true })
+    // The last explicit ASKING marker is the current topic. Unlike coverage,
+    // active progress must not be inferred from whether the user already supplied
+    // some content: follow-up questions can continue inside the same dimension.
+    let activeDimension: string | null = null
+    let latestAskingIndex = -1
+    messages.forEach((message, index) => {
+      if (message.role !== 'assistant') return
+      if (message.questionDimension && ALL_DIMS.includes(message.questionDimension as DimKey) &&
+          !allEmpty.includes(message.questionDimension) && index >= latestAskingIndex) {
+        activeDimension = message.questionDimension
+        latestAskingIndex = index
+      }
+      for (const match of messageSource(message).matchAll(/\[ASKING[：:]\s*([^\]]+)\]/gi)) {
+        const dimension = match[1].trim()
+        if (ALL_DIMS.includes(dimension as DimKey) && !allEmpty.includes(dimension) && index >= latestAskingIndex) {
+          activeDimension = dimension
+          latestAskingIndex = index
+        }
+      }
+    })
+    const interviewComplete = messages.some(message =>
+      message.role === 'assistant' && (
+        /\[INTERVIEW_COMPLETE\]/.test(messageSource(message)) ||
+        /(?:今天|本次)的?采访.{0,10}(?:到这里|结束)|采访就差不多到这里/.test(messageSource(message))
+      ))
+    if (interviewComplete) activeDimension = null
+
+    return Response.json({ dimensions, coveredDimensions, activeDimension, success: true })
 
   } catch (error) {
     console.error('[detect-dimensions] 错误:', error)

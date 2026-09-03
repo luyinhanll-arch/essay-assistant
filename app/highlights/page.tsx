@@ -95,7 +95,8 @@ const DIM_ICONS: Record<string, string> = {
 }
 
 // Rendered as pairs (side-by-side when both present)
-const PAIRED_ROWS = [['internship', 'research'], ['motivation', 'plan']]
+const PAIRED_ROWS = [['motivation', 'plan']]
+const CONFIRM_EXP_ORDER = ['research', 'internship', 'project']
 // Per-section editing: each experience is a named entry
 const MULTI_ENTRY_DIMS = ['project', 'internship', 'research']
 
@@ -531,6 +532,7 @@ export default function PersonaPage() {
     emptyDimensions, coveredDimensions, interviewComplete,
     step1Summaries, setStep1Summary,
     dimensionSummaries,
+    cvText, cvAnalysis,
     setPersonas, setSelectedPersona, setFramework,
   } = useAppStore()
 
@@ -540,6 +542,212 @@ export default function PersonaPage() {
 
   const [paragraphLoading, setParagraphLoading] = useState<Record<string, boolean>>({})
 
+  // The completed interview page may recover a dimension from direct Q&A even
+  // when an older progress event omitted it. A non-empty structured summary is
+  // durable evidence that the dimension was actually collected, so confirmation
+  // must not hide that card merely because coveredDimensions lagged behind.
+  const confirmationCoveredDimensions = Array.from(new Set([
+    ...coveredDimensions,
+    ...(interviewComplete
+      ? Object.entries(dimensionSummaries)
+          .filter(([, summary]) => summary.trim() && !/^(?:#\s*)?(?:无|暂无|没有)/.test(summary.trim()))
+          .map(([dimension]) => dimension)
+      : []),
+  ]))
+
+  // CV analysis owns classification. Later summaries may enrich wording, but may
+  // never move an item between research / internship / project.
+  const cvExperienceEntries = (() => {
+    const entries: Array<{ name: string; type: string }> = []
+    let current: { name: string; type: string } | null = null
+    for (const raw of cvAnalysis.split('\n')) {
+      const line = raw.trim()
+      if (/^经历名称[：:]/.test(line)) {
+        if (current) entries.push(current)
+        current = { name: line.replace(/^经历名称[：:]/, '').trim(), type: '' }
+      } else if (/^经历类型[：:]/.test(line) && current) {
+        current.type = line.replace(/^经历类型[：:]/, '').trim()
+      }
+    }
+    if (current) entries.push(current)
+    return entries
+  })()
+  const dimensionType: Record<string, string> = {
+    research: '科研经历', internship: '实习经历', project: '项目经历',
+  }
+  const normalizeExperienceTitle = (value: string) =>
+    value.toLowerCase().replace(/[\s\-_"“”'‘’「」【】《》()（）·•,，.。]/g, '')
+  const fixedNamesForDimension = (dimension: string) =>
+    cvExperienceEntries.filter(entry => entry.type === dimensionType[dimension]).map(entry => entry.name)
+  const summaryForDimension = (dimension: string) => {
+    const summary = step1Summaries[dimension] || ''
+    if (!MULTI_ENTRY_DIMS.includes(dimension)) return summary
+
+    // For no-CV interviews the sidebar structured summary is the canonical
+    // experience list. A detailed summary may have been generated and cached
+    // before the final experience was discovered, so merge any missing entries
+    // locally instead of showing inconsistent counts (and without resending the
+    // full interview to the summarisation service).
+    if (!cvText) {
+      const detailedSections = parseSections(summary).filter(section => section.title || section.bullets.length > 0)
+      const structuredSections = parseSections(dimensionSummaries[dimension] || '')
+        .filter(section => section.title || section.bullets.length > 0)
+      if (structuredSections.length === 0) return summary
+
+      const titleScore = (candidate: string, canonical: string) => {
+        const a = normalizeExperienceTitle(candidate)
+        const b = normalizeExperienceTitle(canonical)
+        if (!a || !b) return 0
+        if (a === b) return 1
+        if (a.includes(b) || b.includes(a)) return 0.95
+        const shorter = a.length <= b.length ? a : b
+        const longer = a.length <= b.length ? b : a
+        const pairs = Array.from({ length: Math.max(0, shorter.length - 1) }, (_, index) => shorter.slice(index, index + 2))
+        return pairs.length ? pairs.filter(pair => longer.includes(pair)).length / pairs.length : 0
+      }
+      const experienceStart = (title: string) => messages.findIndex(message =>
+        message.role === 'user' && titleScore(message.content.split(/[。；;！!\n]/)[0], title) >= 0.45)
+      const organizationToken = (title: string) => title
+        .replace(/^(?:某|一家|一段)/, '')
+        .replace(/(?:法务部|实习经历|实习|部门|公司)$/g, '')
+        .trim()
+      const rawBulletsFor = (title: string, nextTitle?: string) => {
+        const start = experienceStart(title)
+        if (start < 0) return []
+        const nextStart = nextTitle ? experienceStart(nextTitle) : -1
+        const postExperienceStart = messages.findIndex((message, index) =>
+          index > start && message.role === 'assistant' &&
+          /为什么.*(?:选择|申请).*(?:方向|专业)|未来.*(?:规划|打算)|毕业后|个人.*特质/.test(message.content))
+        const end = nextStart > start ? nextStart : postExperienceStart > start ? postExperienceStart : messages.length
+        return messages.slice(start, end)
+          .filter(message => message.role === 'user')
+          .flatMap(message => message.content.split(/[。！？\n]+/))
+          .map(text => text.trim()).filter(text => text.length >= 15)
+          .map(text => text.length > 90 ? `${text.slice(0, 90)}…` : text)
+      }
+
+      const merged = structuredSections.map((structuredSection, index) => {
+        if (!structuredSection.title) return structuredSection
+        const canonical = normalizeExperienceTitle(structuredSection.title)
+        const detailed = detailedSections.find(section => {
+          if (!section.title) return false
+          const candidate = normalizeExperienceTitle(section.title)
+          return candidate === canonical || candidate.includes(canonical) || canonical.includes(candidate)
+        })
+        const otherOrganizations = structuredSections
+          .filter((_, otherIndex) => otherIndex !== index)
+          .map(section => organizationToken(section.title || ''))
+          .filter(token => token.length >= 2)
+        const candidates = [
+          ...(detailed?.bullets || structuredSection.bullets),
+          ...rawBulletsFor(structuredSection.title, structuredSections[index + 1]?.title || undefined),
+        ].filter(bullet => !otherOrganizations.some(token => bullet.includes(token)))
+          .sort((a, b) => b.length - a.length)
+        const bullets: string[] = []
+        for (const candidate of candidates) {
+          const normalized = normalizeExperienceTitle(candidate)
+          if (bullets.some(existing => {
+            const prior = normalizeExperienceTitle(existing)
+            return prior === normalized || prior.includes(normalized) || normalized.includes(prior)
+          })) continue
+          bullets.push(candidate)
+          if (bullets.length >= 5) break
+        }
+        return { title: structuredSection.title, bullets }
+      })
+      return serializeSections(merged)
+    }
+
+    const allowed = fixedNamesForDimension(dimension)
+    if (allowed.length === 0) return ''
+
+    // Older summaries may have put the right experience under the wrong category
+    // and may use a longer title. Search every experience-summary pool, but rebuild
+    // the result strictly in the CV classification and order.
+    const summaryPool = [...MULTI_ENTRY_DIMS, ...MULTI_ENTRY_DIMS]
+      .map((key, index) => index < MULTI_ENTRY_DIMS.length
+        ? step1Summaries[key]
+        : dimensionSummaries[key])
+      .filter(Boolean)
+      .flatMap(text => parseSections(text))
+      .filter(section => section.title)
+
+    const titleScore = (candidate: string, canonical: string) => {
+      const a = normalizeExperienceTitle(candidate)
+      const b = normalizeExperienceTitle(canonical)
+      if (!a || !b) return 0
+      if (a === b) return 1
+      if (a.includes(b) || b.includes(a)) return 0.95
+      const shorter = a.length <= b.length ? a : b
+      const longer = a.length <= b.length ? b : a
+      const bigrams = Array.from({ length: Math.max(0, shorter.length - 1) }, (_, i) => shorter.slice(i, i + 2))
+      if (bigrams.length === 0) return 0
+      return bigrams.filter(pair => longer.includes(pair)).length / bigrams.length
+    }
+
+    const findExperienceStart = (canonical: string) => messages.findIndex(message => {
+      if (message.role !== 'assistant' || !/[？?]/.test(message.content)) return false
+      const finalQuestion = message.content.slice(Math.max(message.content.lastIndexOf('。'), message.content.lastIndexOf('！')) + 1)
+      if (/目标(?:院校|学校)|申请(?:方向|专业|项目|状态)|什么专业|硕士还是博士|其他学校/.test(finalQuestion)) return false
+      if (!/为什么|怎么|如何|什么|哪些|哪一|当时|具体|负责|角色|困难|挑战|解决|结果|收获|反思|选择|决定|测试|设计/.test(finalQuestion)) return false
+      return titleScore(message.content, canonical) >= 0.35
+    })
+
+    const interviewBullets = (canonical: string) => {
+      const start = findExperienceStart(canonical)
+      if (start < 0) return []
+      const canonicalIndex = cvExperienceEntries.findIndex(entry => entry.name === canonical)
+      const nextName = canonicalIndex >= 0 ? cvExperienceEntries[canonicalIndex + 1]?.name : undefined
+      const nextStart = nextName ? findExperienceStart(nextName) : -1
+      const postExperienceStart = messages.findIndex((message, index) =>
+        index > start && message.role === 'assistant' &&
+        /为什么.*(?:选择|申请).*(?:方向|专业)|未来.*(?:规划|打算)|毕业后|个人.*特质|最后一个问题/.test(message.content))
+      const end = nextStart > start
+        ? nextStart
+        : postExperienceStart > start ? postExperienceStart : messages.length
+      return messages.slice(start, end)
+        .filter(message => message.role === 'user')
+        .flatMap(message => message.content.split(/[。！？\n]+/))
+        .map(text => text.trim())
+        .filter(text => text.length >= 15)
+        .filter(text => !/^(?:gsa|GSA).{0,20}(?:服务设计|硕士|博士|项目)|目标(?:院校|学校)|申请(?:方向|专业|项目)/i.test(text))
+        .map(text => text.length > 90 ? `${text.slice(0, 90)}…` : text)
+    }
+
+    const sections = allowed.map(canonical => {
+      const matches = summaryPool
+        .map(section => ({
+          section,
+          score: titleScore(section.title || '', canonical),
+        }))
+        .filter(match => match.score >= 0.35)
+        .sort((a, b) =>
+          (b.score + Math.min(b.section.bullets.length, 4) * 0.03) -
+          (a.score + Math.min(a.section.bullets.length, 4) * 0.03))
+
+      // Merge all matching versions. Prefer concrete, information-rich bullets and
+      // remove shorter statements already contained by a more detailed one.
+      const candidates = matches
+        .flatMap(match => match.section.bullets)
+        .map(bullet => bullet.trim())
+        .filter(Boolean)
+        .sort((a, b) => b.length - a.length)
+        .concat(interviewBullets(canonical).sort((a, b) => b.length - a.length))
+      const bullets: string[] = []
+      for (const candidate of candidates) {
+        const normalized = normalizeExperienceTitle(candidate)
+        const duplicate = bullets.some(existing => {
+          const prior = normalizeExperienceTitle(existing)
+          return prior === normalized || prior.includes(normalized) || normalized.includes(prior)
+        })
+        if (!duplicate) bullets.push(candidate)
+        if (bullets.length >= 5) break
+      }
+      return { title: canonical, bullets }
+    })
+    return serializeSections(sections)
+  }
+
   useEffect(() => {
     if (messages.length === 0) router.replace('/interview')
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -548,7 +756,7 @@ export default function PersonaPage() {
   // Dims that need (re)generation: covered, non-empty, and step1Summary absent or cleared.
   // Used as effect dep so the effect re-fires whenever the interview page invalidates a summary.
   const LAST_DIMS = ['motivation', 'plan', 'personal']
-  const pendingDimsKey = coveredDimensions
+  const pendingDimsKey = confirmationCoveredDimensions
     .filter(d => !emptyDimensions.includes(d) && !step1Summaries[d])
     .filter(d => !LAST_DIMS.includes(d) || interviewComplete)
     .join(',')
@@ -560,7 +768,7 @@ export default function PersonaPage() {
   useEffect(() => {
     if (messages.length === 0 || !pendingDimsKey) return
 
-    const EXP_DIMS = ['project', 'internship', 'research']
+    const EXP_DIMS = ['research', 'internship', 'project']
 
     async function fetchSummary(dim: string, relatedSummaries: Record<string, string> = {}) {
       // Always read fresh state — Zustand persist rehydrates asynchronously.
@@ -659,7 +867,8 @@ export default function PersonaPage() {
   // A dim is "effectively empty" if flagged as empty OR if the generated summary is just "无"
   function dimHasContent(key: string): boolean {
     if (emptyDimensions.includes(key)) return false
-    const s = step1Summaries[key]
+    if (cvText && MULTI_ENTRY_DIMS.includes(key) && fixedNamesForDimension(key).length === 0) return false
+    const s = summaryForDimension(key)
     if (s && /^[·•\s]*无[。.]?\s*$/.test(s.trim())) return false
     return true
   }
@@ -677,7 +886,7 @@ export default function PersonaPage() {
           </div>
 
           {/* academic — full width, single entry */}
-          {coveredDimensions.includes('academic') && dimHasContent('academic') && (() => {
+          {confirmationCoveredDimensions.includes('academic') && dimHasContent('academic') && (() => {
             const dim = INTERVIEW_DIMENSIONS.find(d => d.key === 'academic')!
             return (
               <div className="mb-3">
@@ -691,27 +900,28 @@ export default function PersonaPage() {
             )
           })()}
 
-          {/* project — full width, multi entry */}
-          {coveredDimensions.includes('project') && dimHasContent('project') && (() => {
-            const dim = INTERVIEW_DIMENSIONS.find(d => d.key === 'project')!
+          {/* Experience sections — fixed order: research → internship → project */}
+          {CONFIRM_EXP_ORDER.map(key => {
+            if (!confirmationCoveredDimensions.includes(key) || !dimHasContent(key)) return null
+            const dim = INTERVIEW_DIMENSIONS.find(d => d.key === key)!
             return (
-              <div className="mb-3">
+              <div key={key} className="mb-3">
                 <MultiEntryCard
-                  dimKey="project" label={dim.label}
-                  summary={step1Summaries['project'] || ''}
-                  loading={!!paragraphLoading['project']}
-                  onSave={val => saveAndInvalidate('project', val)}
+                  dimKey={key} label={dim.label}
+                  summary={summaryForDimension(key)}
+                  loading={!!paragraphLoading[key]}
+                  onSave={val => saveAndInvalidate(key, val)}
                 />
               </div>
             )
-          })()}
+          })}
 
-          {/* paired rows: internship+research (multi), motivation+plan (single) */}
+          {/* paired row: motivation + plan */}
           {PAIRED_ROWS.map(([a, b]) => {
-            const keys = [a, b].filter(k => coveredDimensions.includes(k) && dimHasContent(k))
+            const keys = [a, b].filter(k => confirmationCoveredDimensions.includes(k) && dimHasContent(k))
             if (keys.length === 0) return null
             return (
-              <div key={`${a}-${b}`} className={`grid gap-3 mb-3 ${keys.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              <div key={`${a}-${b}`} className="grid grid-cols-1 gap-3 mb-3">
                 {keys.map(key => {
                   const dim = INTERVIEW_DIMENSIONS.find(d => d.key === key)!
                   const isLoading = !!paragraphLoading[key]
@@ -719,7 +929,7 @@ export default function PersonaPage() {
                     return (
                       <MultiEntryCard
                         key={key} dimKey={key} label={dim.label}
-                        summary={step1Summaries[key] || ''}
+                        summary={summaryForDimension(key)}
                         loading={isLoading}
                         onSave={val => saveAndInvalidate(key, val)}
                       />
@@ -739,14 +949,14 @@ export default function PersonaPage() {
           })}
 
           {/* personal — full width */}
-          {coveredDimensions.includes('personal') && dimHasContent('personal') && (() => {
+          {confirmationCoveredDimensions.includes('personal') && dimHasContent('personal') && (() => {
             const dim = INTERVIEW_DIMENSIONS.find(d => d.key === 'personal')!
             return (
               <div className="mb-3">
                 <ExperienceCard
                   dimKey="personal" label={dim.label}
                   summary={paragraphLoading['personal'] ? '' : (step1Summaries['personal'] || '')}
-                  isCovered={coveredDimensions.includes('personal')}
+                  isCovered={confirmationCoveredDimensions.includes('personal')}
                   onSave={val => saveAndInvalidate('personal', val)}
                 />
               </div>

@@ -1,7 +1,43 @@
 export interface Message {
+  /** Stable identity used to bind a user answer to the exact AI question. */
+  id?: string
   role: 'user' | 'assistant'
   content: string
   rawContent?: string  // original AI response with hidden tags (for detection only)
+  /** For user messages: the assistant message this answer belongs to. */
+  replyToMessageId?: string
+  /** Server-selected topic for this assistant question; authoritative for progress. */
+  questionDimension?: string
+  /** Optional state-machine objective, e.g. challenge/result/availability. */
+  questionObjective?: string
+  /** Concrete item being discussed, e.g. a course, internship or project. */
+  questionSubject?: string
+  /** Authoritative sidebar changes emitted by a question or its direct answer. */
+  progressEvents?: InterviewProgressEvent[]
+}
+
+/** Server-owned plan for one assistant turn. The model may phrase it naturally,
+ * but it cannot choose a different workflow state. */
+export interface InterviewTurnPlan {
+  dimension: string
+  objective: string
+  subject: string
+  effectiveExperienceCount: number
+}
+
+export type InterviewProgressEventType =
+  | 'dimension_started'
+  | 'dimension_available'
+  | 'dimension_completed'
+  | 'dimension_empty'
+  | 'dimension_deferred'
+  | 'experience_retracted'
+  | 'interview_completed'
+
+export interface InterviewProgressEvent {
+  type: InterviewProgressEventType
+  dimension?: string
+  experience?: string
 }
 
 export interface Persona {
@@ -29,9 +65,9 @@ export const ESSAY_TYPE_META: Record<EssayType, { label: string; desc: string; i
 
 export const INTERVIEW_DIMENSIONS = [
   { key: 'academic',   label: '学术背景' },
-  { key: 'project',    label: '项目经历' },
-  { key: 'internship', label: '实习经历' },
   { key: 'research',   label: '科研经历' },
+  { key: 'internship', label: '实习经历' },
+  { key: 'project',    label: '项目经历' },
   { key: 'motivation', label: '申请动机' },
   { key: 'plan',       label: '未来规划' },
   { key: 'personal',   label: '个人特质' },

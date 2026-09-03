@@ -75,7 +75,8 @@ export async function streamDeepSeek(
 /** 非流式调用，返回纯文本 */
 export async function callDeepSeek(
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  options: { temperature?: number } = {},
 ): Promise<string> {
   const res = await fetch(DEEPSEEK_API_URL, {
     method: 'POST',
@@ -89,6 +90,7 @@ export async function callDeepSeek(
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
+      ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
       stream: false,
     }),
   })
