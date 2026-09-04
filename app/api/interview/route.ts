@@ -358,6 +358,15 @@ export async function POST(req: Request) {
     }
     return identities
   }
+  const structuredIdentityAnswerIncludesContribution = (
+    dimension: 'research' | 'internship',
+    answer: string,
+  ) => {
+    const contributionLead = /(?:我|本人)?(?:主要)?(?:负责|参与|承担|完成|协助|主导|独立完成)|(?:具体|主要|日常)(?:职责|工作|任务|贡献)(?:是|包括|有)?/
+    if (contributionLead.test(answer)) return true
+    return dimension === 'research' &&
+      /(?:在其中|研究中|课题中).{0,12}(?:做了|完成了|开展了|设计了|分析了|撰写了)/.test(answer)
+  }
   const getStructuredExperienceProgress = (dimension: 'research' | 'internship') => {
     const objectiveToStage: Record<string, StructuredExperienceStage> = {
       [`${dimension}_open_experience`]: 'identity',
@@ -397,6 +406,14 @@ export async function POST(req: Request) {
             .slice(0, 48)
           current.answered.identity = true
           current.resolved.identity = true
+          // Applicants often answer an identity-only opener with useful role
+          // details as well (for example “百度，前端实习生，负责后台系统”).
+          // Credit that information immediately so the next turn does not ask
+          // for the same duties again.
+          if (structuredIdentityAnswerIncludesContribution(dimension, answer.content)) {
+            current.answered.contribution = true
+            current.resolved.contribution = true
+          }
           for (const identity of additionalIdentities) {
             if (arcs.some(arc => isLikelyExperienceAlias(arc.label, identity))) continue
             const queuedArc = blankArc(arcs.length + 1)
@@ -1529,6 +1546,15 @@ export async function POST(req: Request) {
     const bundlesMultipleFormalExperiences = (text: string) =>
       ['research_open_experience', 'internship_open_experience'].includes(turnObjective) &&
       /(?:两|二|2|多|几)段.{0,30}(?:分别|各自)|分别.{0,40}(?:单位|机构|岗位|课题|研究|科研|实习)/.test(text)
+    const formalOpeningBundlesContribution = (text: string) =>
+      ['research_open_experience', 'internship_open_experience'].includes(turnObjective) &&
+      /(?:工作内容|具体(?:负责|工作|任务|贡献)|日常(?:负责|工作|做)|个人(?:职责|贡献)|亲自(?:负责|完成)|承担了什么)/.test(text)
+    const formalExperienceSwitchesBeforeCompletion = (text: string) =>
+      ['research', 'internship'].includes(authoritativeDimension) &&
+      !['research_open_experience', 'internship_open_experience'].includes(turnObjective) && (
+        /(?:进入|转到|开始|接着聊|继续聊).{0,16}(?:第[二三四五六七八九十]|下一|另一)段/.test(text) ||
+        /(?:第[二三四五六七八九十]|下一|另一)段.{0,24}(?:科研|研究|实习|单位|机构|岗位|课题)/.test(text)
+      )
     const asksExpectedExperienceDimension = (text: string) => {
       if (authoritativeDimension === 'research') {
         const wronglyAsksInternship = /(?:实习.{0,30}(?:单位|公司|岗位|工作|负责|在哪里)|(?:在哪里|哪家|什么岗位).{0,20}实习)/.test(text)
@@ -1563,7 +1589,8 @@ export async function POST(req: Request) {
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
-        bundlesMultipleFormalExperiences(draft) || !asksExpectedExperienceDimension(draft) ||
+        bundlesMultipleFormalExperiences(draft) || formalOpeningBundlesContribution(draft) ||
+        formalExperienceSwitchesBeforeCompletion(draft) || !asksExpectedExperienceDimension(draft) ||
         switchesAwayFromLockedExperience(draft))
     if (invalidDraft) {
       const requiredAction = `当前状态机维度是 ${authoritativeDimension}，当前唯一阶段是 ${turnObjective}。只允许提出一个属于该阶段的问题，并输出 [ASKING:${authoritativeDimension}]。不得跳过具体职责直接询问困难，也不得在过程阶段提前询问结果。科研未完成时禁止进入实习；实习未完成时禁止进入项目。预筛已经回答，禁止再次询问是否有科研或实习。`
@@ -1586,7 +1613,8 @@ export async function POST(req: Request) {
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
-        bundlesMultipleFormalExperiences(draft) || !asksExpectedExperienceDimension(draft) ||
+        bundlesMultipleFormalExperiences(draft) || formalOpeningBundlesContribution(draft) ||
+        formalExperienceSwitchesBeforeCompletion(draft) || !asksExpectedExperienceDimension(draft) ||
         switchesAwayFromLockedExperience(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
