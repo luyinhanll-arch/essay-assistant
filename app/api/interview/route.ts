@@ -211,7 +211,7 @@ export async function POST(req: Request) {
       return [identity]
     }).slice(0, 8)
   }
-  type ProjectQueueItem = { id: string; name: string; order: number }
+  type ProjectQueueItem = { id: string; name: string; order: number; inventoryText: string }
   const inventoryProjectQueue: ProjectQueueItem[] = []
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
     const message = messages[messageIndex]
@@ -226,10 +226,18 @@ export async function POST(req: Request) {
     names.forEach((name, itemIndex) => {
       if (inventoryProjectQueue.some(item => normalizeName(item.name) === normalizeName(name))) return
       const anchor = message.id || `message-${messageIndex}`
+      const inventorySegments = reply.content
+        .split(/[\r\n；;]+/)
+        .map(segment => segment.trim())
+        .filter(Boolean)
+      const inventoryText = inventorySegments.find(segment =>
+        normalizeName(segment).includes(normalizeName(name))) ||
+        (names.length === 1 ? reply.content.trim() : name)
       inventoryProjectQueue.push({
         id: `project:${anchor}:${itemIndex + 1}`,
         name,
         order: inventoryProjectQueue.length,
+        inventoryText,
       })
     })
   }
@@ -284,6 +292,7 @@ export async function POST(req: Request) {
       id: `project:legacy:${projectQueueItems.length + 1}`,
       name,
       order: projectQueueItems.length,
+      inventoryText: name,
     })
   }
   const projectDisciplineText = `${quickInfo?.major || ''} ${quickInfo?.targetMajor || ''}`
@@ -443,39 +452,62 @@ export async function POST(req: Request) {
   const getProjectQueueProgress = (item: ProjectQueueItem) => {
     const answeredObjectives = new Set<string>()
     const skippedObjectives = new Set<string>()
+    const answerTexts: string[] = []
+    let legacyOpenAskedForContribution = false
     let hasIdBoundQuestion = false
     messages.forEach((message, index) => {
       if (message.role !== 'assistant' || message.questionSubjectId !== item.id) return
       hasIdBoundQuestion = true
       const answer = getDirectAnswer(index)
       const objective = message.questionObjective || ''
-      if (answer?.content.trim()) answeredObjectives.add(objective)
+      if (answer?.content.trim()) {
+        answeredObjectives.add(objective)
+        answerTexts.push(answer.content.trim())
+      }
+      if (objective === 'project_open_experience' &&
+          /(?:你|申请者).{0,16}(?:负责|承担|贡献|亲自完成)|(?:哪一部分|哪项任务).{0,12}(?:负责|完成)/.test(messageSource(message))) {
+        legacyOpenAskedForContribution = true
+      }
       if (skippedQuestionIdSet.has(message.id || '')) skippedObjectives.add(objective)
     })
+    const evidence = answerTexts.join('\n')
     const isResolved = (objective: string) =>
       answeredObjectives.has(objective) || skippedObjectives.has(objective)
-    const contributionAnswered = isResolved('project_open_experience')
-    const processAnswered = isResolved('project_deep_dive_process')
-    const outcomeAnswered = isResolved('project_deep_dive_outcome')
+    const inventoryProvidesContext = /(?:围绕|旨在|目标是|主要(?:做|研究|分析|开发|设计|完成)|用于|通过|使用|基于|针对|完成了|开发了|设计了|分析了|构建了|解决)/.test(item.inventoryText)
+    const contextAnswered = inventoryProvidesContext || isResolved('project_open_experience')
+    const semanticContribution = /(?:我|本人).{0,16}(?:负责|承担|主导|完成|搭建|建立|设计|实现|分析|清洗|建模|撰写|组织|协调|提出|选择|决定|处理)|(?:主要|具体)(?:负责|承担|完成|做了)|独立完成/.test(evidence)
+    const semanticProcess = /(?:遇到|面临|出现|发现|存在).{0,30}(?:问题|困难|挑战|偏差|异常|不足|瓶颈|冲突|不一致)|(?:为了解决|针对|于是|因此|随后|最后选择|最终决定|权衡|取舍).{0,50}(?:调整|改进|比较|验证|重做|处理|解决|采用|引入|建立|设计|放弃|保留)|(?:我|我们).{0,20}(?:比较|权衡|调整|改进|验证|重做|解决|处理)/.test(evidence)
+    const semanticOutcome = /(?:最终|最后).{0,45}(?:完成|形成|实现|获得|提交|入选|获奖|提升|降低|改善|落地|上线)|结果(?:显示|表明|证明|为|是)|(?:成绩|获奖|评价|反馈|评委|老师|用户|团队).{0,24}(?:是|为|认为|肯定|认可|采纳|指出)|(?:意识到|认识到|学到|明白|反思|后来发现|这让我)/.test(evidence)
+    const contributionAnswered = isResolved('project_experience_contribution') ||
+      semanticContribution ||
+      (legacyOpenAskedForContribution && answeredObjectives.has('project_open_experience'))
+    const processAnswered = isResolved('project_deep_dive_process') || semanticProcess
+    const outcomeAnswered = isResolved('project_deep_dive_outcome') || semanticOutcome
     const skippedStageCount = [
       'project_open_experience',
+      'project_experience_contribution',
       'project_deep_dive_process',
       'project_deep_dive_outcome',
     ].filter(objective => skippedObjectives.has(objective)).length
+    const answeredContribution = answeredObjectives.has('project_experience_contribution') ||
+      semanticContribution ||
+      (legacyOpenAskedForContribution && answeredObjectives.has('project_open_experience'))
+    const answeredStoryDepth = answeredObjectives.has('project_deep_dive_process') ||
+      answeredObjectives.has('project_deep_dive_outcome') || semanticProcess || semanticOutcome
     return {
       hasIdBoundQuestion,
+      contextAnswered,
       contributionAnswered,
       processAnswered,
       outcomeAnswered,
       // Two unavailable information points mean this story is no longer worth
       // forcing. Close it even if the final stage was never asked.
       closed: skippedStageCount >= 2 ||
-        (contributionAnswered && processAnswered && outcomeAnswered),
+        (contextAnswered && contributionAnswered && outcomeAnswered),
       // Closing the queue item and counting it as useful material are separate.
       // A skipped stage supplies no evidence.
-      materialComplete: answeredObjectives.has('project_open_experience') &&
-        (answeredObjectives.has('project_deep_dive_process') ||
-          answeredObjectives.has('project_deep_dive_outcome')),
+      materialComplete: contextAnswered &&
+        answeredContribution && answeredStoryDepth,
     }
   }
   const getExperienceEvidence = (experienceName: string, experienceId = '') => {
@@ -1083,21 +1115,28 @@ export async function POST(req: Request) {
       ? getProjectQueueProgress(pendingProjectQueueItem)
       : null
     const projectEvidence = getExperienceEvidence(pendingDiscoveredProject, turnSubjectId)
-    const contributionAnswered = queueProgress?.hasIdBoundQuestion
-      ? queueProgress.contributionAnswered
-      : projectEvidence?.hasContribution
-    const processAnswered = queueProgress?.hasIdBoundQuestion
-      ? queueProgress.processAnswered
-      : Boolean(projectEvidence?.hasChallenge || projectEvidence?.hasSolution)
-    if (!projectHasStarted || !contributionAnswered) {
+    const contextAnswered = Boolean(queueProgress?.contextAnswered || projectHasStarted)
+    const contributionAnswered = Boolean(
+      queueProgress?.contributionAnswered || projectEvidence?.hasContribution,
+    )
+    const processAnswered = Boolean(
+      queueProgress?.processAnswered || projectEvidence?.hasChallenge || projectEvidence?.hasSolution,
+    )
+    const outcomeAnswered = Boolean(
+      queueProgress?.outcomeAnswered || projectEvidence?.hasOutcome || projectEvidence?.hasReflection,
+    )
+    if (!contextAnswered) {
       turnObjective = 'project_open_experience'
-      turnDirective = `用户已经提供了项目候选“${pendingDiscoveredProject}”。本轮正式打开这一段，只询问申请者在其中主要负责或亲自完成了哪一部分；不要同时询问题目、团队分工、困难、解决方法、结果或收获。首次深挖需用该项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
+      turnDirective = `用户已经提供了项目候选“${pendingDiscoveredProject}”，但无 CV 采访不能假定系统已经了解项目内容。本轮先建立项目画面，只自然询问它是在什么背景下、围绕什么对象或问题、想完成什么目标；结合用户清单中已经说过的内容，只补最关键的一个基本事实，不要重复其原话。暂不询问个人分工、困难、方法、结果或收获。首次深挖需用该项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
+    } else if (!contributionAnswered) {
+      turnObjective = 'project_experience_contribution'
+      turnDirective = `${projectHasStarted ? `继续当前项目“${pendingDiscoveredProject}”。` : `用户在盘点时已经讲清“${pendingDiscoveredProject}”的基本内容，本轮直接开始深挖，并输出 [EXP:${pendingDiscoveredProject}]。`}项目背景和目标已经清楚，本轮只补个人贡献中最有区分度的一个缺口：申请者实际承担了什么、亲自做了什么或作出了什么关键决定。必须承接用户上一条回答中的具体内容来问，不要让其重新概括整个项目，也不要询问困难、结果或另一段经历。末尾输出 [ASKING:project]。`
     } else if (!processAnswered) {
       turnObjective = 'project_deep_dive_process'
-      turnDirective = `继续深挖当前项目“${pendingDiscoveredProject}”。用户已经说明了个人职责，本轮只开放询问实际遇到的一个困难、关键判断或重要取舍，以及当时如何处理；不得虚构缺失值、样本问题或其他具体困难作为提问前提，不得询问结果、收获或另一段经历。末尾输出 [ASKING:project]。`
-    } else {
+      turnDirective = `继续当前项目“${pendingDiscoveredProject}”，采用有 CV 采访的缺口驱动方式：先吸收用户已经说出的背景和个人贡献，再选择最有文书价值且尚未说明的一个故事缺口追问。优先追问真实发生的关键判断、方案比较、意外、失败、调整或推进过程，以及为什么这样做；问题必须引用上一条回答中的具体任务或决定，不能使用泛化的“遇到什么困难”，也不得虚构具体问题作为前提。只问一个核心问题，不询问结果、申请动机或另一段经历。末尾输出 [ASKING:project]。`
+    } else if (!outcomeAnswered) {
       turnObjective = 'project_deep_dive_outcome'
-      turnDirective = `继续深挖当前项目“${pendingDiscoveredProject}”。用户已经说明个人职责和处理过程，本轮只询问最终产出、可验证结果、外部反馈或个人反思中最适合该经历的一项；不得把尚未出现的成绩、奖项、落地效果写成事实，不得寻找另一段经历。末尾输出 [ASKING:project]。`
+      turnDirective = `继续当前项目“${pendingDiscoveredProject}”。背景、个人贡献和关键过程已经清楚，本轮只补最适合这段经历的一个结尾缺口：可验证结果、真实外部反馈，或确实发生的认识变化。问题要承接刚才的具体行动，不要机械罗列“成果、反馈、收获”让用户三选一；不得暗示尚未确认的奖项、落地或提升，也不得寻找另一段经历。末尾输出 [ASKING:project]。`
     }
   } else if (!cvText.trim() && missing[0] === 'project' && shouldAskSupplementalProjectInventory) {
     turnObjective = 'project_supplemental_inventory'
@@ -1284,8 +1323,12 @@ export async function POST(req: Request) {
       '最后再盘点一次：你还能想到其他值得聊的课程项目、比赛或实践吗？',
     ],
     project_open_experience: [
-      `先聚焦${rephraseSubject}，其中哪一部分是你亲自负责的？`,
-      `如果只挑一项最能代表个人投入的任务，你在${rephraseSubject}里具体完成了什么？`,
+      `先帮我了解${rephraseSubject}本身：它是在解决什么问题，或者想完成什么目标？`,
+      `如果只用一两句话介绍，${rephraseSubject}是在什么背景下做的，主要做什么？`,
+    ],
+    project_experience_contribution: [
+      `了解项目本身后，再说说你在${rephraseSubject}中实际承担了哪部分工作？`,
+      `这个项目里，哪项具体任务或决定主要是由你完成的？`,
     ],
     project_deep_dive_process: [
       `${rephraseSubject}推进时，哪个环节最需要你判断或取舍，你是怎么处理的？`,
@@ -1333,8 +1376,10 @@ export async function POST(req: Request) {
     ? `${projectIdentityQuestion}\n\n[ASKING:project]`
     : controlAction === 'skip'
     ? turnObjective === 'project_open_experience' && turnSubject
-      ? `接下来聊“${turnSubject}”：你在其中主要负责或亲自完成了哪一部分？\n\n[ASKING:project]`
-      : turnObjective === 'project_deep_dive_process' && turnSubject
+      ? `接下来聊“${turnSubject}”：它主要围绕什么问题，想完成什么目标？\n\n[ASKING:project]`
+      : turnObjective === 'project_experience_contribution' && turnSubject
+        ? `在“${turnSubject}”中，哪部分工作或决定主要由你亲自完成？\n\n[ASKING:project]`
+        : turnObjective === 'project_deep_dive_process' && turnSubject
         ? `继续说“${turnSubject}”：其中哪次关键判断或处理最值得展开，你当时具体是怎么做的？\n\n[ASKING:project]`
         : turnObjective === 'project_deep_dive_outcome' && turnSubject
           ? `“${turnSubject}”最后形成了什么结果，或者得到了什么具体反馈？\n\n[ASKING:project]`
@@ -1498,8 +1543,28 @@ export async function POST(req: Request) {
       ].filter(pattern => pattern.test(question)).length
       return facets > 1
     }
+    const projectQuestionMatchesObjective = (text: string) => {
+      const question = text.match(/[^。！？!?\n]*[？?]/)?.[0] || text
+      const asksContext = /(?:项目|比赛|竞赛|实践).{0,28}(?:背景|目标|任务|主题|问题|做什么|是什么|完成什么|解决什么)|(?:围绕|想要|旨在|在解决|要解决|想完成|主要做).{0,24}(?:什么|问题|目标|任务|完成|解决)|(?:数据集|样本|材料|案例|团队|比赛).{0,20}(?:来源|规模|构成|背景|级别)|(?:什么时候|多长时间|几个人|多少人).{0,12}(?:完成|参加|团队|项目)?/.test(question)
+      const asksContribution = /(?:你|本人).{0,20}(?:负责|承担|贡献|亲自|完成|做了|决定|角色|分工|工作)|(?:哪部分|哪一项|哪项).{0,18}(?:工作|任务|决定|负责|完成)/.test(question)
+      const asksProcess = /(?:困难|挑战|难点|问题|意外|失败|卡住|判断|决定|取舍|权衡|比较|调整|推进|怎么做|如何做|怎么处理|如何处理|为什么.{0,16}(?:选择|采用|决定|调整|放弃))/.test(question)
+      const asksOutcome = /(?:结果|成果|产出|成绩|获奖|反馈|采纳|落地|上线|变化|影响|后来怎样|之后怎样|收获|反思|学到|意识到)/.test(question)
+      if (turnObjective === 'project_open_experience') {
+        return asksContext || (!asksContribution && !asksProcess && !asksOutcome)
+      }
+      if (turnObjective === 'project_experience_contribution') {
+        return asksContribution || (!asksContext && !asksProcess && !asksOutcome)
+      }
+      if (turnObjective === 'project_deep_dive_process') {
+        return asksProcess || (!asksContext && !asksContribution && !asksOutcome)
+      }
+      if (turnObjective === 'project_deep_dive_outcome') {
+        return asksOutcome || (!asksContext && !asksContribution && !asksProcess)
+      }
+      return true
+    }
     const projectOpeningPrematurelyDone = (text: string) => {
-      if (!['project_open_experience', 'project_identify_experience'].includes(turnObjective) || !turnSubject) {
+      if (!['project_open_experience', 'project_experience_contribution', 'project_identify_experience'].includes(turnObjective) || !turnSubject) {
         return false
       }
       const completedNames = Array.from(
@@ -1586,7 +1651,7 @@ export async function POST(req: Request) {
     const invalidDraft = questionCount !== 1 || (authoritativeDimension === 'project'
       ? !asksProjectQuestion(draft) || mixesCurrentAndNextExperience || prematurelyClosesWhileAsking ||
         mislabelsShortAnswerAsPaste || mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
-        projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
+        projectInventoryWordingIsInvalid(draft) || !projectQuestionMatchesObjective(draft) || switchesAwayFromServerProject(draft) ||
         switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
         bundlesMultipleFormalExperiences(draft) || formalOpeningBundlesContribution(draft) ||
@@ -1610,7 +1675,7 @@ export async function POST(req: Request) {
     const retryStillInvalid = (draft.match(/[？?]/g) || []).length !== 1 || (authoritativeDimension === 'project'
       ? !asksProjectQuestion(draft) || retryMixesExperiences ||
         mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
-        projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
+        projectInventoryWordingIsInvalid(draft) || !projectQuestionMatchesObjective(draft) || switchesAwayFromServerProject(draft) ||
         switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
         bundlesMultipleFormalExperiences(draft) || formalOpeningBundlesContribution(draft) ||
@@ -1618,6 +1683,10 @@ export async function POST(req: Request) {
         switchesAwayFromLockedExperience(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
+      const latestAnswerExcerpt = latestUserAnswer.replace(/[？?]/g, '').replace(/\s+/g, ' ').slice(0, 56)
+      const latestDecisionExcerpt = (latestUserAnswer.match(
+        /(?:最后|最终)?(?:选择|决定|采用|改用|调整|比较)[^，,。；;！!]{1,36}/,
+      )?.[0] || latestAnswerExcerpt).replace(/[？?]/g, '')
       const introducedExperienceName = latestUserAnswer
         .split(/[：:。；;！!\n]/)[0].replace(/[\*#「」『』]/g, '').trim().slice(0, 40)
       const latestAnswerIntroducesExperience = introducedExperienceName.length >= 2 &&
@@ -1649,11 +1718,13 @@ export async function POST(req: Request) {
                 : '接下来聊聊实习。你先从第一段说起，当时在哪个单位或机构、做什么岗位？\n\n[ASKING:internship]'
       } else {
         draft = turnObjective === 'project_deep_dive_process' && turnSubject
-          ? `继续说“${turnSubject}”：其中哪次关键判断或处理最值得展开，你当时具体是怎么做的？\n\n[ASKING:project]`
+          ? `你刚才提到“${latestAnswerExcerpt}”。围绕这部分，哪次判断或调整最值得展开，你当时为什么这样做？\n\n[ASKING:project]`
           : turnObjective === 'project_deep_dive_outcome' && turnSubject
-            ? `“${turnSubject}”最后形成了什么结果，或者得到了什么具体反馈？\n\n[ASKING:project]`
+            ? `你刚才提到“${latestDecisionExcerpt}”。这个选择落实后，“${turnSubject}”最终形成了什么可确认的结果或反馈？\n\n[ASKING:project]`
+          : turnObjective === 'project_experience_contribution' && turnSubject
+            ? `结合你刚才介绍的“${latestAnswerExcerpt}”，你在“${turnSubject}”中实际承担了哪部分工作？\n\n[ASKING:project]`
           : turnObjective === 'project_open_experience' && turnSubject
-            ? `我们先从“${turnSubject}”说起。你在这段经历中主要负责哪一部分？\n\n[ASKING:project]`
+            ? `我们先从“${turnSubject}”本身说起：它主要围绕什么问题，想完成什么目标？\n\n[ASKING:project]`
           : turnObjective === 'project_identify_experience'
             ? `${projectIdentityQuestion}\n\n[ASKING:project]`
           : latestAnswerIntroducesExperience
