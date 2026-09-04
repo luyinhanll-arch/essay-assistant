@@ -502,10 +502,10 @@ export async function POST(req: Request) {
   const academicStageComplete = hasCompleteAcademicBackgroundEvidence(messages) ||
     (coreCoursesAnswered && focusCourseAnswered && noFocusCourse)
   const uncoveredFocusCourses = getUncoveredFocusCourses(messages)
-  const academicIsInCurrentWindow = messages.some(message =>
-    message.role === 'assistant' && /\[ASKING[：:]\s*academic\]/i.test(messageSource(message)))
-  if (!cvText.trim() && effectiveCoveredDimensions.includes('academic') &&
-      academicIsInCurrentWindow && !academicStageComplete) {
+  // The pre-screen only records research/internship availability; it never
+  // completes academic background. Ignore stale or optimistic client progress
+  // unless the conversation itself contains the required academic answers.
+  if (!cvText.trim() && effectiveCoveredDimensions.includes('academic') && !academicStageComplete) {
     effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'academic')
   }
   const EXTRACURRICULAR_PROJECT_QUESTION = /(?:课程|课堂)(?:之外|以外)|课外.{0,20}(?:项目|活动|竞赛|比赛|大赛|实践)|除了.{0,20}(?:课程|上课|大作业).{0,30}(?:竞赛|比赛|大赛|个人项目|活动|实践|社团)|(?:参加过|做过).{0,16}(?:竞赛|比赛|大赛|个人项目|实践)|(?:竞赛|比赛|大赛|个人项目).{0,20}(?:社团|学生组织|社会实践|公益活动)/
