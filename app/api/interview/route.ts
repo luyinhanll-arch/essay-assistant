@@ -1080,7 +1080,7 @@ export async function POST(req: Request) {
     turnSubject = controlTargetQuestion.questionSubject || turnSubject
     turnSubjectId = controlTargetQuestion.questionSubjectId || turnSubjectId
     const originalQuestion = controlTargetQuestion.content.trim().slice(0, 240)
-    turnDirective = `申请者点击了“换个方式问”，这不是采访答案，也没有提供任何新事实。保持原来的维度、经历和阶段不变，用更短、更具体、更容易回忆的方式重新提出同一个核心问题。不得引用或复述“这个问题我不太清楚怎么回答”等界面提示；不得声称用户重复粘贴、输入有误或已经回答；不得进入下一阶段或创建新经历。原问题是：“${originalQuestion}”。`
+    turnDirective = `申请者点击了“换个方式问”，这不是采访答案，也没有提供任何新事实。保持原来的维度、经历和阶段不变，但必须改变问题的句式和回答入口；不能原样输出，也不能只替换一两个近义词。优先把抽象问题改成“回忆一个具体场景”“只挑一项任务”或“从可观察结果说起”等更容易回答的问法。不得引用或复述“这个问题我不太清楚怎么回答”等界面提示；不得声称用户重复粘贴、输入有误或已经回答；不得进入下一阶段或创建新经历。原问题是：“${originalQuestion}”。`
   } else if (controlAction === 'skip' && controlTargetQuestion) {
     turnDirective = `${turnDirective}\n申请者通过界面明确跳过了上一问题；这不是采访内容，不得引用为用户事实。按照状态机当前选择的下一缺口继续，不得换措辞重问被跳过的问题。`.trim()
   }
@@ -1142,7 +1142,134 @@ export async function POST(req: Request) {
     role: message.role,
     content: message.content,
   }))
-  const deterministicStateDraft = turnObjective === 'project_identify_experience'
+  const rephraseSubject = turnSubject ? `“${turnSubject}”` : '这段经历'
+  const rephraseOptionsByObjective: Record<string, string[]> = {
+    alternative_target: [
+      '除了现在填写的目标，你还有其他特别想去的学校或地区吗？',
+      '如果保留一个备选目标，你目前还会考虑哪所学校或哪个地区？',
+    ],
+    experience_availability: [
+      '先只做经历盘点：你是否做过持续科研，以及是否有正式实习？请分别回答有或没有。',
+      '正式采访前请确认两项：科研经历有还是没有，正式实习有还是没有？',
+    ],
+    academic_core_courses: [
+      '你能先列出本科阶段最主要的几门专业课吗？',
+      '回顾本科培养方案，哪些核心或主干课程最能代表你的专业学习？',
+    ],
+    academic_focus_courses: [
+      '如果不必只选一门，哪些课程让你比较感兴趣、投入较多或印象较深？',
+      '刚才列出的课程中，你最愿意继续展开聊哪一门或哪几门？',
+    ],
+    academic_course_profile: [
+      `${rephraseSubject}里，哪个具体内容最影响你后来理解或处理专业问题的方式？`,
+      `回想${rephraseSubject}，你最先想到的一个知识点、案例或分析框架是什么，它改变了你看问题的哪一层？`,
+    ],
+    academic_course_profile_clarification: [
+      `先只挑${rephraseSubject}里的一个具体知识点或案例，你最先想到什么？`,
+      `不必概括整门课，${rephraseSubject}中哪个具体内容给你留下了印象？`,
+    ],
+    academic_course_content: [
+      `${rephraseSubject}主要学习了哪些具体内容？`,
+      `如果用几项关键词概括，${rephraseSubject}讲了哪些核心内容？`,
+    ],
+    academic_course_takeaway: [
+      `学完${rephraseSubject}后，你分析专业问题时多了什么方法或判断视角？`,
+      `${rephraseSubject}带来的哪种思维方式，后来被你真正用在了其他场景中？`,
+    ],
+    research_open_experience: [
+      '先定位这段科研：它主要研究什么问题或课题？',
+      '如果用一句话概括，这项研究最想弄清什么问题？',
+    ],
+    research_experience_contribution: [
+      `在${rephraseSubject}中，哪部分工作是你具体负责或亲自完成的？`,
+      `先只挑一项任务来说，你在${rephraseSubject}里实际承担了什么？`,
+    ],
+    research_deep_dive_process: [
+      `回想${rephraseSubject}，哪个研究难点让你调整过原来的做法，你当时如何处理？`,
+      `${rephraseSubject}中哪次方法取舍最考验你的判断，你最后是怎么决定的？`,
+      `如果只讲一个卡住过你的环节，当时是什么问题，你怎样把它推进下去的？`,
+    ],
+    research_deep_dive_outcome: [
+      `${rephraseSubject}最后形成了什么具体成果？`,
+      `这项研究结束时，你得到的最明确发现是什么？`,
+      `导师或团队后来怎样评价你完成的这部分工作？`,
+    ],
+    internship_open_experience: [
+      '先定位这段实习：你当时在哪个单位的什么岗位？',
+      '这段实习发生在哪家公司或机构，你负责的工作方向是什么？',
+    ],
+    internship_experience_contribution: [
+      `先不概括全部工作，你在${rephraseSubject}里最常亲自完成的具体任务是什么？`,
+      `如果只挑一项最能代表这段实习的任务，哪一项主要由你负责？`,
+    ],
+    internship_deep_dive_process: [
+      '回想这段实习，哪件事不能直接照着现成流程处理，你当时是怎么推进的？',
+      '你刚才列出的工作中，哪一次最考验你的判断，你当时采取了什么做法？',
+      '如果挑一个最棘手的具体场景，当时发生了什么，你最后怎样处理？',
+    ],
+    internship_deep_dive_outcome: [
+      '这件工作做完后，产生了什么看得见的结果？',
+      '你完成的内容后来得到了什么具体反馈？',
+      '这段实习中哪项产出最能说明你的实际贡献？',
+    ],
+    project_identify_experience: [
+      '用一句话概括，这个项目围绕什么对象、想弄清什么问题？',
+      '这个项目研究或处理的具体对象是什么？',
+      '如果给这个项目起一个准确标题，你会怎样概括它的主题？',
+    ],
+    project_inventory: [
+      '除了已经聊到的经历，你还能列出哪些课程外项目、竞赛或实践？',
+      '你做过哪些与申请方向相关的课外项目或比赛？先说名称和大致内容即可。',
+    ],
+    project_supplemental_inventory: [
+      '除现有经历外，还有其他项目、竞赛或实践可以补充吗？没有也可以直接说没有。',
+      '最后再盘点一次：你还能想到其他值得聊的课程项目、比赛或实践吗？',
+    ],
+    project_open_experience: [
+      `先聚焦${rephraseSubject}，其中哪一部分是你亲自负责的？`,
+      `如果只挑一项最能代表个人投入的任务，你在${rephraseSubject}里具体完成了什么？`,
+    ],
+    project_deep_dive_process: [
+      `${rephraseSubject}推进时，哪个环节最需要你判断或取舍，你是怎么处理的？`,
+      `这个项目中有没有哪一步需要你比较不同做法后再决定？请从那次取舍说起。`,
+      `如果只讲一次项目卡住的情况，当时是什么问题，你怎样继续推进的？`,
+    ],
+    project_deep_dive_outcome: [
+      `${rephraseSubject}最终形成了什么可确认的成果？`,
+      '这个项目完成后，最具体的外部反馈是什么？',
+      '如果只看一项结果，什么最能说明这个项目最后做成了什么？',
+    ],
+    motivation_major: [
+      '回想前面这些经历，哪个具体时刻让你决定继续申请现在的专业方向？',
+      '如果不谈笼统的兴趣，你为什么想把这个专业继续学下去？',
+    ],
+    motivation_school: [
+      '你实际了解过目标院校或地区的哪些内容，其中什么最符合你的学习需要？',
+      '做申请选择时，目标院校或地区的哪项具体特点最打动你？',
+    ],
+    plan_follow_up: [
+      '完成学业后，你最希望先进入什么类型的工作或发展环境？',
+      '如果只看毕业后的第一步，你希望从什么岗位或方向开始？',
+    ],
+  }
+  const rephraseOptions = rephraseOptionsByObjective[turnObjective] || []
+  const normalizeVisibleQuestion = (value: string) => value
+    .replace(/\[(?:ASKING|COVERED|EMPTY|DEFERRED|EXP(?:_DONE|_VALUE)?)[：:][^\]]+\]/gi, '')
+    .replace(/\s+/g, '')
+    .trim()
+  const recentRephrasedQuestions = messages
+    .filter(message => message.role === 'assistant' && message.questionObjective === turnObjective)
+    .map(message => normalizeVisibleQuestion(message.content))
+  const selectedRephrase = rephraseOptions.find(option =>
+    !recentRephrasedQuestions.includes(normalizeVisibleQuestion(option))) ||
+    rephraseOptions[recentRephrasedQuestions.length % Math.max(1, rephraseOptions.length)] || ''
+  const rephraseDimension = controlTargetQuestion?.questionDimension || authoritativeDimension
+  const deterministicRephraseDraft = controlAction === 'rephrase' && selectedRephrase
+    ? `${selectedRephrase}${ALL_DIMENSIONS.includes(rephraseDimension) ? `\n\n[ASKING:${rephraseDimension}]` : ''}`
+    : ''
+  const deterministicStateDraft = deterministicRephraseDraft
+    ? deterministicRephraseDraft
+    : turnObjective === 'project_identify_experience'
     ? `${projectIdentityQuestion}\n\n[ASKING:project]`
     : controlAction === 'skip'
     ? turnObjective === 'project_open_experience' && turnSubject
