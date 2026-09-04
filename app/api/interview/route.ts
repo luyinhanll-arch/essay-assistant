@@ -250,6 +250,40 @@ export async function POST(req: Request) {
       order: projectQueueItems.length,
     })
   }
+  const getDirectAnswer = (questionIndex: number) => {
+    const question = messages[questionIndex]
+    if (!question || question.role !== 'assistant') return undefined
+    if (question.id) {
+      const explicitlyBound = messages.find(candidate =>
+        candidate.role === 'user' && candidate.replyToMessageId === question.id)
+      if (explicitlyBound) return explicitlyBound
+    }
+    for (let index = questionIndex + 1; index < messages.length; index += 1) {
+      if (messages[index].role === 'assistant') break
+      if (messages[index].role === 'user') return messages[index]
+    }
+    return undefined
+  }
+  const getProjectQueueProgress = (item: ProjectQueueItem) => {
+    const answeredObjectives = new Set<string>()
+    let hasIdBoundQuestion = false
+    messages.forEach((message, index) => {
+      if (message.role !== 'assistant' || message.questionSubjectId !== item.id) return
+      hasIdBoundQuestion = true
+      const answer = getDirectAnswer(index)
+      if (answer?.content.trim()) answeredObjectives.add(message.questionObjective || '')
+    })
+    const contributionAnswered = answeredObjectives.has('project_open_experience')
+    const processAnswered = answeredObjectives.has('project_deep_dive_process')
+    const outcomeAnswered = answeredObjectives.has('project_deep_dive_outcome')
+    return {
+      hasIdBoundQuestion,
+      contributionAnswered,
+      processAnswered,
+      outcomeAnswered,
+      complete: contributionAnswered && processAnswered && outcomeAnswered,
+    }
+  }
   const getExperienceEvidence = (experienceName: string, experienceId = '') => {
     const startIndex = messages.findIndex(message => {
       if (message.role !== 'assistant') return false
@@ -294,6 +328,8 @@ export async function POST(req: Request) {
   }
   const hasVerifiedExperienceCompletion = (experienceName: string) => {
     const queueItem = projectQueueItems.find(item => isLikelyExperienceAlias(item.name, experienceName))
+    const queueProgress = queueItem ? getProjectQueueProgress(queueItem) : null
+    if (queueProgress?.hasIdBoundQuestion) return queueProgress.complete
     const evidence = getExperienceEvidence(experienceName, queueItem?.id)
     if (!evidence) return false
     // A role description plus one generic follow-up is not a deep dive. Require
@@ -310,12 +346,7 @@ export async function POST(req: Request) {
     ...startedExperiences,
     ...(activeExperience ? [activeExperience] : []),
     ...projectQueueItems
-      .filter(item => {
-        const evidence = getExperienceEvidence(item.name, item.id)
-        return !!evidence && evidence.hasContribution &&
-          (evidence.hasChallenge || evidence.hasSolution) &&
-          (evidence.hasOutcome || evidence.hasReflection)
-      })
+      .filter(item => getProjectQueueProgress(item).complete)
       .map(item => item.name),
   ])).filter(name => hasVerifiedExperienceCompletion(name))
   const verifiedCompletedExperienceNames = Array.from(new Set([
@@ -486,10 +517,12 @@ export async function POST(req: Request) {
   // Queue position, not the spelling of a project name, controls progress.
   // Always select the first item whose own question-id evidence is incomplete.
   const pendingProjectQueueItems = projectQueueItems.filter(item => {
-    const evidence = getExperienceEvidence(item.name, item.id)
-    return !evidence || !evidence.hasContribution ||
-      (!evidence.hasChallenge && !evidence.hasSolution) ||
-      (!evidence.hasOutcome && !evidence.hasReflection)
+    const progress = getProjectQueueProgress(item)
+    if (progress.hasIdBoundQuestion) return !progress.complete
+    const legacyEvidence = getExperienceEvidence(item.name, item.id)
+    return !legacyEvidence || !legacyEvidence.hasContribution ||
+      (!legacyEvidence.hasChallenge && !legacyEvidence.hasSolution) ||
+      (!legacyEvidence.hasOutcome && !legacyEvidence.hasReflection)
   })
   const pendingProjectCandidates = pendingProjectQueueItems.map(item => item.name)
   if (!cvText.trim() && effectiveCoveredDimensions.includes('project') && projectIsInCurrentWindow &&
@@ -811,11 +844,20 @@ export async function POST(req: Request) {
       (turnSubjectId && messages.some(message => message.questionSubjectId === turnSubjectId)) ||
       startedExperienceSet.has(normalizeName(pendingDiscoveredProject)),
     )
+    const queueProgress = pendingProjectQueueItem
+      ? getProjectQueueProgress(pendingProjectQueueItem)
+      : null
     const projectEvidence = getExperienceEvidence(pendingDiscoveredProject, turnSubjectId)
-    if (!projectHasStarted || !projectEvidence?.hasContribution) {
+    const contributionAnswered = queueProgress?.hasIdBoundQuestion
+      ? queueProgress.contributionAnswered
+      : projectEvidence?.hasContribution
+    const processAnswered = queueProgress?.hasIdBoundQuestion
+      ? queueProgress.processAnswered
+      : Boolean(projectEvidence?.hasChallenge || projectEvidence?.hasSolution)
+    if (!projectHasStarted || !contributionAnswered) {
       turnObjective = 'project_open_experience'
       turnDirective = `用户已经提供了项目候选“${pendingDiscoveredProject}”。本轮正式打开这一段，只询问申请者在其中主要负责或亲自完成了哪一部分；不要同时询问题目、团队分工、困难、解决方法、结果或收获。首次深挖需用该项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
-    } else if (!projectEvidence.hasChallenge && !projectEvidence.hasSolution) {
+    } else if (!processAnswered) {
       turnObjective = 'project_deep_dive_process'
       turnDirective = `继续深挖当前项目“${pendingDiscoveredProject}”。用户已经说明了个人职责，本轮只开放询问实际遇到的一个困难、关键判断或重要取舍，以及当时如何处理；不得虚构缺失值、样本问题或其他具体困难作为提问前提，不得询问结果、收获或另一段经历。末尾输出 [ASKING:project]。`
     } else {
