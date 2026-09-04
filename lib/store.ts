@@ -28,6 +28,7 @@ interface AppStore {
   expMessageIndex: Record<string, number>          // 经历名称 -> [EXP:] 标记所在的消息index
   activeExperience: string | null                 // CV 固定队列中当前正在深挖的经历
   completedExperiences: string[]                  // CV 固定队列中已经深挖完成的经历
+  skippedQuestionIds: string[]                    // UI skip controls; never interview evidence
   activeDimension: string | null                  // 当前正在被问询的维度
   emptyDimensions: string[]                       // 已确认无相关经历的维度
   progressRevision: number                        // 权威进度的原子更新版本
@@ -63,6 +64,7 @@ interface AppStore {
   setExpMessageIndex: (name: string, index: number) => void
   setActiveExperience: (name: string | null) => void
   completeExperience: (name: string) => void
+  skipInterviewQuestion: (questionId: string) => void
   setQuickInfo: (info: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null) => void
   resetInterview: () => void
   reset: () => void
@@ -90,6 +92,7 @@ const initialState = {
   expMessageIndex: {},
   activeExperience: null,
   completedExperiences: [],
+  skippedQuestionIds: [],
   activeDimension: null,
   emptyDimensions: [],
   progressRevision: 0,
@@ -320,6 +323,10 @@ export const useAppStore = create<AppStore>()(
           activeExperience: shouldClearActive ? null : state.activeExperience,
         }
       }),
+      skipInterviewQuestion: (questionId) => set((state) =>
+        !questionId || state.skippedQuestionIds.includes(questionId)
+          ? state
+          : { skippedQuestionIds: [...state.skippedQuestionIds, questionId] }),
       setQuickInfo: (info) => set({ quickInfo: info }),
 
       resetInterview: () => set({
@@ -339,6 +346,7 @@ export const useAppStore = create<AppStore>()(
     expMessageIndex: {},
     activeExperience: null,
     completedExperiences: [],
+    skippedQuestionIds: [],
     activeDimension: null,
     emptyDimensions: [],
     progressRevision: 0,

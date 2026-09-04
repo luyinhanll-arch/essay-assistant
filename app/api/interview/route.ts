@@ -23,7 +23,15 @@ export async function POST(req: Request) {
     activeExperience = '',
     completedExperiences = [],
     startedExperiences = [],
-  }: { messages: Message[]; coveredDimensions?: string[]; deferredDimensions?: string[]; emptyDimensions?: string[]; cvText?: string; cvAnalysis?: string; quickInfo?: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null; activeExperience?: string; completedExperiences?: string[]; startedExperiences?: string[] } = await req.json()
+    skippedQuestionIds = [],
+    controlAction = '',
+    controlQuestionId = '',
+  }: { messages: Message[]; coveredDimensions?: string[]; deferredDimensions?: string[]; emptyDimensions?: string[]; cvText?: string; cvAnalysis?: string; quickInfo?: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null; activeExperience?: string; completedExperiences?: string[]; startedExperiences?: string[]; skippedQuestionIds?: string[]; controlAction?: 'rephrase' | 'skip' | ''; controlQuestionId?: string } = await req.json()
+
+  const skippedQuestionIdSet = new Set(skippedQuestionIds)
+  const controlTargetQuestion = controlQuestionId
+    ? messages.find(message => message.role === 'assistant' && message.id === controlQuestionId)
+    : undefined
 
   // Program-level queue guard for CV interviews. Dimension tags emitted by the
   // model are not trusted while typed experiences in that dimension remain.
@@ -185,7 +193,7 @@ export async function POST(req: Request) {
   const inventoryProjectQueue: ProjectQueueItem[] = []
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
     const message = messages[messageIndex]
-    if (message.role !== 'assistant' ||
+    if (message.role !== 'assistant' || skippedQuestionIdSet.has(message.id || '') ||
         !['project_inventory', 'project_supplemental_inventory', 'project_identify_experience']
           .includes(message.questionObjective || '')) continue
     const reply = message.id
@@ -277,7 +285,9 @@ export async function POST(req: Request) {
       if (message.role !== 'assistant' || message.questionSubjectId !== item.id) return
       hasIdBoundQuestion = true
       const answer = getDirectAnswer(index)
-      if (answer?.content.trim()) answeredObjectives.add(message.questionObjective || '')
+      if (answer?.content.trim() || skippedQuestionIdSet.has(message.id || '')) {
+        answeredObjectives.add(message.questionObjective || '')
+      }
     })
     const contributionAnswered = answeredObjectives.has('project_open_experience')
     const processAnswered = answeredObjectives.has('project_deep_dive_process')
@@ -417,15 +427,21 @@ export async function POST(req: Request) {
     const questionIndex = messages.findIndex(message =>
       message.role === 'assistant' && pattern.test(messageSource(message))
     )
-    return questionIndex >= 0 && messages.slice(questionIndex + 1)
-      .some(message => message.role === 'user' && message.content.trim().length > 0)
+    return questionIndex >= 0 && (
+      skippedQuestionIdSet.has(messages[questionIndex].id || '') ||
+      messages.slice(questionIndex + 1)
+        .some(message => message.role === 'user' && message.content.trim().length > 0)
+    )
   }
   const hasAnsweredObjective = (objective: string, fallbackPattern: RegExp) => {
     const questionIndex = messages.findIndex(message =>
       message.role === 'assistant' &&
       (message.questionObjective === objective || fallbackPattern.test(messageSource(message))))
-    return questionIndex >= 0 && messages.slice(questionIndex + 1)
-      .some(message => message.role === 'user' && message.content.trim().length > 0)
+    return questionIndex >= 0 && (
+      skippedQuestionIdSet.has(messages[questionIndex].id || '') ||
+      messages.slice(questionIndex + 1)
+        .some(message => message.role === 'user' && message.content.trim().length > 0)
+    )
   }
   const hasFilledTargetPreference = Boolean(quickInfo?.targetSchool?.trim())
   const alternativeTargetAnswered = hasAnsweredObjective(
@@ -516,7 +532,8 @@ export async function POST(req: Request) {
       }
     }
     const reply = explicitlyBoundReply || adjacentReply
-    return Boolean(reply && NEGATIVE_PROJECT_INVENTORY_REPLY.test(reply.content.trim()))
+    return skippedQuestionIdSet.has(message.id || '') ||
+      Boolean(reply && NEGATIVE_PROJECT_INVENTORY_REPLY.test(reply.content.trim()))
   })
   const projectIsInCurrentWindow = messages.some(message =>
     message.role === 'assistant' && /\[ASKING[：:]\s*project\]/i.test(messageSource(message)))
@@ -906,6 +923,15 @@ export async function POST(req: Request) {
       turnDirective = `申请者已经选定重点课程“${recoveredCourse}”。不得再次询问选择哪门课；本轮只自然询问这门课主要学习了哪些内容。末尾输出 [ASKING:academic]。`
     }
   }
+  if (controlAction === 'rephrase' && controlTargetQuestion) {
+    turnObjective = controlTargetQuestion.questionObjective || turnObjective
+    turnSubject = controlTargetQuestion.questionSubject || turnSubject
+    turnSubjectId = controlTargetQuestion.questionSubjectId || turnSubjectId
+    const originalQuestion = controlTargetQuestion.content.trim().slice(0, 240)
+    turnDirective = `申请者点击了“换个方式问”，这不是采访答案，也没有提供任何新事实。保持原来的维度、经历和阶段不变，用更短、更具体、更容易回忆的方式重新提出同一个核心问题。不得引用或复述“这个问题我不太清楚怎么回答”等界面提示；不得声称用户重复粘贴、输入有误或已经回答；不得进入下一阶段或创建新经历。原问题是：“${originalQuestion}”。`
+  } else if (controlAction === 'skip' && controlTargetQuestion) {
+    turnDirective = `${turnDirective}\n申请者通过界面明确跳过了上一问题；这不是采访内容，不得引用为用户事实。按照状态机当前选择的下一缺口继续，不得换措辞重问被跳过的问题。`.trim()
+  }
   const isPreludeObjective = ['alternative_target', 'experience_availability'].includes(turnObjective)
 
   let systemPrompt = buildInterviewSystemPrompt(
@@ -1151,6 +1177,11 @@ export async function POST(req: Request) {
     }
     const mislabelsShortAnswerAsPaste = latestUserAnswer.length <= 12 &&
       /(?:重复粘贴|复制了一遍|上一条内容.{0,8}重复)/.test(draft)
+    const mischaracterizesRephrase = (text: string) => controlAction === 'rephrase' &&
+      /(?:重复粘贴|复制(?:了|的)?内容|输入有误|已经回答过|上一段内容.{0,8}重复)/.test(text)
+    const missesInventoryIntent = (text: string) =>
+      ['project_inventory', 'project_supplemental_inventory'].includes(turnObjective) &&
+      !/(?:(?:还有|其他|另外|除此之外|除.{0,12}外).{0,40}(?:项目|竞赛|比赛|实践|活动|经历)|(?:项目|竞赛|比赛|实践|活动|经历).{0,30}(?:还有|其他|补充|列出))/.test(text)
     const mixesCurrentAndNextExperience = Boolean(activeExperience || pendingDiscoveredProject) &&
       questionCount >= 2 &&
       /(?:接下来|再来|接着|然后).{0,24}(?:聊|听听|看看).{0,20}(?:下一|另一|那段|法律援助|课程论文|模拟法庭|项目|经历)/.test(draft)
@@ -1159,7 +1190,7 @@ export async function POST(req: Request) {
       /(?:接下来|再来|接着|然后)/.test(draft)
     const invalidDraft = questionCount !== 1 || (authoritativeDimension === 'project'
       ? !asksProjectQuestion(draft) || mixesCurrentAndNextExperience || prematurelyClosesWhileAsking ||
-        mislabelsShortAnswerAsPaste || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
+        mislabelsShortAnswerAsPaste || mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || switchesAwayFromLockedExperience(draft))
@@ -1180,7 +1211,7 @@ export async function POST(req: Request) {
       /(?:接下来|再来|接着|然后).{0,24}(?:聊|听听|看看).{0,20}(?:下一|另一|那段|法律援助|课程论文|模拟法庭|项目|经历)/.test(draft)
     const retryStillInvalid = (draft.match(/[？?]/g) || []).length !== 1 || (authoritativeDimension === 'project'
       ? !asksProjectQuestion(draft) || retryMixesExperiences ||
-        projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
+        mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || switchesAwayFromLockedExperience(draft))

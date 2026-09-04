@@ -49,6 +49,7 @@ export default function InterviewPage() {
     setExpMessageIndex,
     setActiveExperience,
     completeExperience,
+    skipInterviewQuestion,
     markDimensionEmpty,
     removeFromEmpty,
     cvText,
@@ -668,7 +669,10 @@ export default function InterviewPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function callAI(msgs: Message[]) {
+  async function callAI(
+    msgs: Message[],
+    control?: { action: 'rephrase' | 'skip'; questionId: string },
+  ) {
     setStreamingText('')
     setIsThinking(true)
     isThinkingRef.current = true
@@ -702,6 +706,9 @@ export default function InterviewPage() {
         activeExperience:   snap.activeExperience,
         completedExperiences: snap.completedExperiences,
         startedExperiences: Object.keys(snap.expMessageIndex),
+        skippedQuestionIds: snap.skippedQuestionIds ?? [],
+        controlAction: control?.action || '',
+        controlQuestionId: control?.questionId || '',
       })
       let res: Response | null = null
       let lastFetchError: unknown = null
@@ -1351,6 +1358,16 @@ export default function InterviewPage() {
     // [EMPTY:dim] tag is the authoritative signal, parsed in callAI → parseAIMessage.
 
     await callAI([...messagesRef.current, userMsg])
+  }
+
+  async function handleInterviewControl(action: 'rephrase' | 'skip') {
+    if (isThinkingRef.current) return
+    const state = useAppStore.getState()
+    const latestAssistant = [...state.messages].reverse()
+      .find(message => message.role === 'assistant' && message.content.trim())
+    if (!latestAssistant?.id) return
+    if (action === 'skip') skipInterviewQuestion(latestAssistant.id)
+    await callAI(state.messages, { action, questionId: latestAssistant.id })
   }
 
   function recalibrateProgressFromHistory() {
@@ -2073,13 +2090,13 @@ export default function InterviewPage() {
             {!interviewComplete && !isThinking && messages.some(m => m.role === 'assistant') && (
               <div className="flex justify-end gap-3 mb-2">
                 <button
-                  onClick={() => handleSend('这个问题我不太清楚怎么回答，你能换个方式问我吗？')}
+                  onClick={() => handleInterviewControl('rephrase')}
                   className="text-[11px] text-stone-400 hover:text-stone-600 transition-colors"
                 >
                   换个方式问
                 </button>
                 <button
-                  onClick={() => handleSend('这个问题我答不上来，跳过这道题，但继续聊这段经历吧。')}
+                  onClick={() => handleInterviewControl('skip')}
                   className="text-[11px] text-stone-400 hover:text-stone-600 transition-colors"
                 >
                   跳过此问题
