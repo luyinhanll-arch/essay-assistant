@@ -844,14 +844,19 @@ export default function InterviewPage() {
       }
 
       // ── Record [EXP:name] markers → expMessageIndex ──────────────────────────
-      if (exp.length > 0) {
+      const serverLocksExperience = interviewProtocolVersion === 2 &&
+        !!serverSubject &&
+        ['project', 'internship', 'research'].includes(inferredQuestionDimension)
+      const openedExperienceNames = serverLocksExperience ? [serverSubject] : exp
+
+      if (openedExperienceNames.length > 0) {
         const msgIdx = useAppStore.getState().messages.length - 1
-        exp.forEach(name => {
+        openedExperienceNames.forEach(name => {
           if (!(name in useAppStore.getState().expMessageIndex)) {
             setExpMessageIndex(name, msgIdx)
           }
         })
-        setActiveExperience(exp[exp.length - 1])
+        setActiveExperience(openedExperienceNames[openedExperienceNames.length - 1])
       } else if (!cvText && serverSubject &&
           ['project', 'internship', 'research'].includes(inferredQuestionDimension)) {
         // The server owns the experience queue. Keep the current subject even if
@@ -872,7 +877,17 @@ export default function InterviewPage() {
         }
       }
       if (expDone.length > 0) {
-        expDone.forEach(name => completeCvExperience(name))
+        expDone
+          // While the server is asking about an experience, a model-generated
+          // EXP_DONE marker for that same item is premature. Completion is
+          // accepted only when the next server turn has actually moved on.
+          .filter(name => {
+            if (!serverLocksExperience) return true
+            const completedName = normalizeExperienceName(name)
+            const lockedName = normalizeExperienceName(serverSubject)
+            return !(completedName === lockedName || completedName.includes(lockedName) || lockedName.includes(completedName))
+          })
+          .forEach(name => completeCvExperience(name))
       }
 
       // Local completion fallback. If 3/4 depth criteria have been answered and

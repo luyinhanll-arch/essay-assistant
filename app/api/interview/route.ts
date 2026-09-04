@@ -203,7 +203,7 @@ export async function POST(req: Request) {
       const message = messages[index]
       if (message.role === 'assistant') {
         const nextName = messageSource(message).match(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/i)?.[1] || ''
-        const nextSubject = message.questionDimension === 'project'
+        const nextSubject = ['research', 'internship', 'project'].includes(message.questionDimension || '')
           ? message.questionSubject || ''
           : ''
         if ((nextName && !isLikelyExperienceAlias(nextName, experienceName)) ||
@@ -973,9 +973,16 @@ export async function POST(req: Request) {
       ].filter(pattern => pattern.test(question)).length
       return facets > 1
     }
-    const projectOpeningPrematurelyDone = (text: string) =>
-      ['project_open_experience', 'project_identify_experience'].includes(turnObjective) &&
-      /\[EXP_DONE[：:]\s*[^]]+\]/i.test(text)
+    const projectOpeningPrematurelyDone = (text: string) => {
+      if (!['project_open_experience', 'project_identify_experience'].includes(turnObjective) || !turnSubject) {
+        return false
+      }
+      const completedNames = Array.from(
+        text.matchAll(/\[EXP_DONE[：:]\s*([^\]]+)\]/gi),
+        match => match[1].trim(),
+      )
+      return completedNames.some(name => isLikelyExperienceAlias(name, turnSubject))
+    }
     const projectInventoryWordingIsInvalid = (text: string) => {
       if (turnObjective !== 'project_inventory') return false
       const questionEnd = text.search(/[？?]/)
@@ -1007,6 +1014,18 @@ export async function POST(req: Request) {
         !isLikelyExperienceAlias(name, turnSubject) &&
         text.includes(name))
     }
+    const lockedExperienceSubject = turnSubject || (
+      activeExperience && !verifiedCompletedExperienceNames
+        .some(completed => isLikelyExperienceAlias(activeExperience, completed))
+        ? activeExperience
+        : ''
+    )
+    const switchesAwayFromLockedExperience = (text: string) => {
+      if (!lockedExperienceSubject ||
+          !['research', 'internship', 'project'].includes(authoritativeDimension)) return false
+      const openedNames = Array.from(text.matchAll(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/gi), match => match[1].trim())
+      return openedNames.some(name => !isLikelyExperienceAlias(name, lockedExperienceSubject))
+    }
     const mislabelsShortAnswerAsPaste = latestUserAnswer.length <= 12 &&
       /(?:重复粘贴|复制了一遍|上一条内容.{0,8}重复)/.test(draft)
     const mixesCurrentAndNextExperience = Boolean(activeExperience || pendingDiscoveredProject) &&
@@ -1019,8 +1038,8 @@ export async function POST(req: Request) {
       ? !asksProjectQuestion(draft) || mixesCurrentAndNextExperience || prematurelyClosesWhileAsking ||
         mislabelsShortAnswerAsPaste || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
-        violatesProjectSubstate(draft)
-      : skipsToLaterDimension(draft))
+        violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
+      : skipsToLaterDimension(draft) || switchesAwayFromLockedExperience(draft))
     if (invalidDraft) {
       const currentHasDepth = hasDimensionDepth(authoritativeDimension, 3)
       const requiredAction = currentHasDepth
@@ -1040,8 +1059,8 @@ export async function POST(req: Request) {
       ? !asksProjectQuestion(draft) || retryMixesExperiences ||
         projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
-        violatesProjectSubstate(draft)
-      : skipsToLaterDimension(draft))
+        violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
+      : skipsToLaterDimension(draft) || switchesAwayFromLockedExperience(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
       const introducedExperienceName = latestUserAnswer
@@ -1072,6 +1091,16 @@ export async function POST(req: Request) {
                 ? '目前有效经历还不到三段，我只再确认这一次：除了已经聊过的内容，你还有一段课程项目、竞赛、实践或学生组织经历可以补充吗？没有也完全没关系。\n\n[ASKING:project]'
                 : `${projectInventoryQuestion}\n\n[ASKING:project]`
       }
+    }
+    // A response that still asks about the locked item cannot complete that same
+    // item or the whole dimension. Keep older-item EXP_DONE markers intact when
+    // the server is intentionally opening the next item.
+    if (lockedExperienceSubject) {
+      draft = draft
+        .replace(/\[EXP_DONE[：:]\s*([^\]]+)\]/gi, (tag, name: string) =>
+          isLikelyExperienceAlias(name.trim(), lockedExperienceSubject) ? '' : tag)
+        .replace(new RegExp(`\\[COVERED[：:]\\s*${authoritativeDimension}\\]`, 'gi'), '')
+        .trim()
     }
     const validatedDimension = classifyInterviewQuestion(draft) ||
       draft.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan)\]/i)?.[1] || ''
@@ -1164,10 +1193,15 @@ export async function POST(req: Request) {
     response.headers.set('X-Interview-Dimension', responseDimension)
   }
   if (responseObjective) response.headers.set('X-Interview-Objective', responseObjective)
-  if (turnSubject || activeExperience) {
+  const unresolvedActiveExperience = activeExperience &&
+    !verifiedCompletedExperienceNames.some(completed => isLikelyExperienceAlias(activeExperience, completed))
+      ? activeExperience
+      : ''
+  const responseExperienceSubject = turnSubject || unresolvedActiveExperience
+  if (responseExperienceSubject) {
     // turnSubject is the item selected by the server for this response. The
     // client may still send the just-completed previous item as activeExperience.
-    response.headers.set('X-Interview-Subject', encodeURIComponent(turnSubject || activeExperience))
+    response.headers.set('X-Interview-Subject', encodeURIComponent(responseExperienceSubject))
   }
   response.headers.set(
     'X-Interview-Covered',
@@ -1178,7 +1212,7 @@ export async function POST(req: Request) {
   response.headers.set('X-Interview-Plan', encodeURIComponent(JSON.stringify({
     dimension: responseDimension,
     objective: responseObjective,
-    subject: turnSubject || activeExperience || '',
+    subject: responseExperienceSubject,
     effectiveExperienceCount: concreteExperienceCount,
   })))
   response.headers.set(
