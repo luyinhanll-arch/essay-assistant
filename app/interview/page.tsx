@@ -688,6 +688,7 @@ export default function InterviewPage() {
           questionDimension: m.questionDimension,
           questionObjective: m.questionObjective,
           questionSubject: m.questionSubject,
+          questionSubjectId: m.questionSubjectId,
           progressEvents: m.progressEvents,
           id: m.id,
           replyToMessageId: m.replyToMessageId,
@@ -726,6 +727,7 @@ export default function InterviewPage() {
       const serverDimension = res.headers.get('X-Interview-Dimension')?.trim() || ''
       const serverObjective = res.headers.get('X-Interview-Objective')?.trim() || ''
       const serverSubject = decodeURIComponent(res.headers.get('X-Interview-Subject')?.trim() || '')
+      const serverSubjectId = decodeURIComponent(res.headers.get('X-Interview-Subject-Id')?.trim() || '')
       const serverNeedsMoreExperiences = res.headers.get('X-Interview-Needs-More-Experiences') === 'true'
       const isPreludeQuestion = ['alternative_target', 'experience_availability'].includes(serverObjective)
       const serverCovered = (res.headers.get('X-Interview-Covered') || '')
@@ -832,6 +834,7 @@ export default function InterviewPage() {
         questionDimension: inferredQuestionDimension || undefined,
         questionObjective: resolvedQuestionObjective,
         questionSubject: resolvedQuestionSubject,
+        questionSubjectId: serverSubjectId || undefined,
       })
       if (!snap.cvText && inferredQuestionDimension) {
         setActiveDimension(inferredQuestionDimension)
@@ -1039,6 +1042,7 @@ export default function InterviewPage() {
           questionDimension: inferredQuestionDimension || undefined,
           questionObjective: resolvedQuestionObjective,
           questionSubject: resolvedQuestionSubject,
+          questionSubjectId: serverSubjectId || undefined,
           progressEvents,
         })
         applyInterviewEvents(progressEvents)

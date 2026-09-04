@@ -12,6 +12,8 @@ export interface Message {
   questionObjective?: string
   /** Concrete item being discussed, e.g. a course, internship or project. */
   questionSubject?: string
+  /** Stable queue identity for an experience. Names are display labels only. */
+  questionSubjectId?: string
   /** Authoritative sidebar changes emitted by a question or its direct answer. */
   progressEvents?: InterviewProgressEvent[]
 }
@@ -22,6 +24,7 @@ export interface InterviewTurnPlan {
   dimension: string
   objective: string
   subject: string
+  subjectId?: string
   effectiveExperienceCount: number
 }
 

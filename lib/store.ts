@@ -35,7 +35,7 @@ interface AppStore {
   quickInfo: { school: string; major: string; gpa: string; targetSchool: string; targetMajor: string; degree: string } | null
 
   addMessage: (msg: Message) => void
-  updateLastAssistantMessage: (content: string, rawContent?: string, metadata?: Pick<Message, 'questionDimension' | 'questionObjective' | 'questionSubject' | 'progressEvents'>) => void
+  updateLastAssistantMessage: (content: string, rawContent?: string, metadata?: Pick<Message, 'questionDimension' | 'questionObjective' | 'questionSubject' | 'questionSubjectId' | 'progressEvents'>) => void
   applyInterviewEvents: (events: InterviewProgressEvent[]) => void
   rebuildInterviewProgressFromMessages: () => void
   setInterviewComplete: (v: boolean) => void
@@ -120,6 +120,7 @@ export const useAppStore = create<AppStore>()(
               ...(metadata?.questionDimension ? { questionDimension: metadata.questionDimension } : {}),
               ...(metadata?.questionObjective ? { questionObjective: metadata.questionObjective } : {}),
               ...(metadata?.questionSubject ? { questionSubject: metadata.questionSubject } : {}),
+              ...(metadata?.questionSubjectId ? { questionSubjectId: metadata.questionSubjectId } : {}),
               ...(metadata?.progressEvents ? { progressEvents: metadata.progressEvents } : {}),
             }
           }

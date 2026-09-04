@@ -151,6 +151,57 @@ export async function POST(req: Request) {
       return identity.length >= 2 ? [identity] : []
     })
   }
+  const NEGATIVE_INVENTORY_ANSWER = /^(?:没有|没|无|没有了|没了|也没有|都没有|想不到|暂时没有|好像没有)[了呢啊吧。！!\s]*$/
+  const parseGenericProjectInventory = (answer: string) => {
+    const trimmed = answer.trim()
+    if (!trimmed || NEGATIVE_INVENTORY_ANSWER.test(trimmed)) return []
+
+    // The inventory question itself establishes that these are project
+    // candidates. Parse the applicant's list structure instead of requiring a
+    // known carrier word such as “商赛/建模赛”. This supports future, unseen
+    // competition and activity names.
+    const enumerated = trimmed
+      .replace(/[，,；;、]\s*(?=(?:一|二|两|三|四|五|六|七|八|九|十|\d+)\s*(?:段|个|项)[^，,；;、])/g, '\n')
+      .split(/\n+/)
+      .map(line => line.trim())
+      .filter(Boolean)
+    const semicolonOrList = enumerated.length > 1
+      ? enumerated
+      : trimmed.split(/[；;、\n]+/).map(line => line.trim()).filter(Boolean)
+
+    return semicolonOrList.flatMap(rawCandidate => {
+      const candidate = rawCandidate
+        .replace(/^\s*(?:\d+[.、)]|[一二两三四五六七八九十]+[、.)])\s*/, '')
+        .replace(/^(?:我)?(?:有|参加过|参与过|做过)?\s*(?:一|二|两|三|四|五|六|七|八|九|十|\d+)?\s*(?:段|个|项)\s*/, '')
+        .trim()
+      if (!candidate) return []
+      const identity = candidate.split(/[：:。！!]/)[0]
+        .replace(/[\*#「」『』《》]/g, '').trim().slice(0, 60)
+      if (identity.length < 2 || /^(?:相关)?(?:项目|比赛|竞赛|实践|活动|经历)$/.test(identity)) return []
+      return [identity]
+    }).slice(0, 8)
+  }
+  type ProjectQueueItem = { id: string; name: string; order: number }
+  const inventoryProjectQueue: ProjectQueueItem[] = []
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    const message = messages[messageIndex]
+    if (message.role !== 'assistant' ||
+        !['project_inventory', 'project_supplemental_inventory'].includes(message.questionObjective || '')) continue
+    const reply = message.id
+      ? messages.find(candidate => candidate.role === 'user' && candidate.replyToMessageId === message.id)
+      : messages.slice(messageIndex + 1).find(candidate => candidate.role === 'user')
+    if (!reply) continue
+    const names = parseGenericProjectInventory(reply.content)
+    names.forEach((name, itemIndex) => {
+      if (inventoryProjectQueue.some(item => normalizeName(item.name) === normalizeName(name))) return
+      const anchor = message.id || `message-${messageIndex}`
+      inventoryProjectQueue.push({
+        id: `project:${anchor}:${itemIndex + 1}`,
+        name,
+        order: inventoryProjectQueue.length,
+      })
+    })
+  }
   const inferredProjectNames = messages.flatMap((message, index) => {
     if (message.role !== 'assistant') return []
     const source = messageSource(message)
@@ -185,13 +236,24 @@ export async function POST(req: Request) {
     experienceDimensionByName.get(normalizeName(name)) === 'project' ||
     PROJECT_NAME_CARRIER.test(name))
   const allDiscoveredProjectNames = Array.from(new Set([
+    ...inventoryProjectQueue.map(item => item.name),
     ...inferredProjectNames,
     ...directlyDeclaredProjectNames,
     ...stateOpenedProjectNames,
   ]))
-  const getExperienceEvidence = (experienceName: string) => {
+  const projectQueueItems: ProjectQueueItem[] = [...inventoryProjectQueue]
+  for (const name of allDiscoveredProjectNames) {
+    if (projectQueueItems.some(item => normalizeName(item.name) === normalizeName(name))) continue
+    projectQueueItems.push({
+      id: `project:legacy:${projectQueueItems.length + 1}`,
+      name,
+      order: projectQueueItems.length,
+    })
+  }
+  const getExperienceEvidence = (experienceName: string, experienceId = '') => {
     const startIndex = messages.findIndex(message => {
       if (message.role !== 'assistant') return false
+      if (experienceId && message.questionSubjectId === experienceId) return true
       const source = messageSource(message)
       const tagged = source.match(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/i)?.[1] || ''
       return (tagged && isLikelyExperienceAlias(tagged, experienceName)) ||
@@ -202,6 +264,7 @@ export async function POST(req: Request) {
     for (let index = startIndex + 1; index < messages.length; index++) {
       const message = messages[index]
       if (message.role === 'assistant') {
+        if (experienceId && message.questionSubjectId && message.questionSubjectId !== experienceId) break
         const nextName = messageSource(message).match(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/i)?.[1] || ''
         const nextSubject = ['research', 'internship', 'project'].includes(message.questionDimension || '')
           ? message.questionSubject || ''
@@ -230,7 +293,8 @@ export async function POST(req: Request) {
     }
   }
   const hasVerifiedExperienceCompletion = (experienceName: string) => {
-    const evidence = getExperienceEvidence(experienceName)
+    const queueItem = projectQueueItems.find(item => isLikelyExperienceAlias(item.name, experienceName))
+    const evidence = getExperienceEvidence(experienceName, queueItem?.id)
     if (!evidence) return false
     // A role description plus one generic follow-up is not a deep dive. Require
     // both process evidence and an outcome/reflection before the queue advances.
@@ -245,6 +309,14 @@ export async function POST(req: Request) {
     ...taggedExperienceNames,
     ...startedExperiences,
     ...(activeExperience ? [activeExperience] : []),
+    ...projectQueueItems
+      .filter(item => {
+        const evidence = getExperienceEvidence(item.name, item.id)
+        return !!evidence && evidence.hasContribution &&
+          (evidence.hasChallenge || evidence.hasSolution) &&
+          (evidence.hasOutcome || evidence.hasReflection)
+      })
+      .map(item => item.name),
   ])).filter(name => hasVerifiedExperienceCompletion(name))
   const verifiedCompletedExperienceNames = Array.from(new Set([
     ...completedTaggedExperienceNames,
@@ -411,9 +483,15 @@ export async function POST(req: Request) {
   })
   const projectIsInCurrentWindow = messages.some(message =>
     message.role === 'assistant' && /\[ASKING[：:]\s*project\]/i.test(messageSource(message)))
-  const completedProjectIdentities = verifiedCompletedExperienceNames
-  const pendingProjectCandidates = allDiscoveredProjectNames.filter(candidate =>
-    !completedProjectIdentities.some(completed => isLikelyExperienceAlias(candidate, completed)))
+  // Queue position, not the spelling of a project name, controls progress.
+  // Always select the first item whose own question-id evidence is incomplete.
+  const pendingProjectQueueItems = projectQueueItems.filter(item => {
+    const evidence = getExperienceEvidence(item.name, item.id)
+    return !evidence || !evidence.hasContribution ||
+      (!evidence.hasChallenge && !evidence.hasSolution) ||
+      (!evidence.hasOutcome && !evidence.hasReflection)
+  })
+  const pendingProjectCandidates = pendingProjectQueueItems.map(item => item.name)
   if (!cvText.trim() && effectiveCoveredDimensions.includes('project') && projectIsInCurrentWindow &&
       (!extracurricularStageAnswered || pendingProjectCandidates.length > 0)) {
     effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'project')
@@ -663,21 +741,14 @@ export async function POST(req: Request) {
   let turnDirective = ''
   let turnObjective = ''
   let turnSubject = ''
+  let turnSubjectId = ''
   const completedExperienceSet = new Set([
     ...verifiedCompletedExperienceNames,
   ].map(normalizeName))
-  const activeProjectStillOpen = activeExperience &&
-    !verifiedCompletedExperienceNames
-      .some(completed => isLikelyExperienceAlias(activeExperience, completed))
-      ? activeExperience
-      : ''
-  const latestOpenedProjectStillOpen = [...taggedExperienceNames].reverse().find(name =>
-    experienceDimensionByName.get(normalizeName(name)) === 'project' &&
-    !verifiedCompletedExperienceNames.some(completed => isLikelyExperienceAlias(name, completed))) || ''
-  // The latest explicit EXP marker is newer evidence than the active item sent
-  // by the client. During a transition the client can briefly retain the previous
-  // item; preferring it would make a third project jump backward to the second.
-  const pendingDiscoveredProject = latestOpenedProjectStillOpen || activeProjectStillOpen || pendingProjectCandidates[0] ||
+  const pendingProjectQueueItem = pendingProjectQueueItems[0]
+  // The first incomplete queue id is authoritative. activeExperience and model
+  // EXP tags are legacy display hints and can never reorder this queue.
+  const pendingDiscoveredProject = pendingProjectQueueItem?.name ||
     allDiscoveredProjectNames.find(name => !completedExperienceSet.has(normalizeName(name))) || ''
   const startedExperienceSet = new Set(startedExperiences.map(normalizeName))
   const targetMajorForRanking = quickInfo?.targetMajor?.trim() || quickInfo?.major?.trim() || '目标专业'
@@ -735,8 +806,12 @@ export async function POST(req: Request) {
   } else if (!cvText.trim() && pendingDiscoveredProject &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnSubject = pendingDiscoveredProject
-    const projectHasStarted = startedExperienceSet.has(normalizeName(pendingDiscoveredProject))
-    const projectEvidence = getExperienceEvidence(pendingDiscoveredProject)
+    turnSubjectId = pendingProjectQueueItem?.id || ''
+    const projectHasStarted = Boolean(
+      (turnSubjectId && messages.some(message => message.questionSubjectId === turnSubjectId)) ||
+      startedExperienceSet.has(normalizeName(pendingDiscoveredProject)),
+    )
+    const projectEvidence = getExperienceEvidence(pendingDiscoveredProject, turnSubjectId)
     if (!projectHasStarted || !projectEvidence?.hasContribution) {
       turnObjective = 'project_open_experience'
       turnDirective = `用户已经提供了项目候选“${pendingDiscoveredProject}”。本轮正式打开这一段，只询问申请者在其中主要负责或亲自完成了哪一部分；不要同时询问题目、团队分工、困难、解决方法、结果或收获。首次深挖需用该项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
@@ -1203,6 +1278,9 @@ export async function POST(req: Request) {
     // client may still send the just-completed previous item as activeExperience.
     response.headers.set('X-Interview-Subject', encodeURIComponent(responseExperienceSubject))
   }
+  if (turnSubjectId) {
+    response.headers.set('X-Interview-Subject-Id', encodeURIComponent(turnSubjectId))
+  }
   response.headers.set(
     'X-Interview-Covered',
     effectiveCoveredDimensions.filter(dimension => !effectiveEmptyDimensions.includes(dimension)).join(','),
@@ -1213,6 +1291,7 @@ export async function POST(req: Request) {
     dimension: responseDimension,
     objective: responseObjective,
     subject: responseExperienceSubject,
+    subjectId: turnSubjectId,
     effectiveExperienceCount: concreteExperienceCount,
   })))
   response.headers.set(
