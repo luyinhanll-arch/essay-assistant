@@ -132,8 +132,19 @@ export async function POST(req: Request) {
     return identity.length >= 2 ? [identity] : []
   })
   const PROJECT_NAME_CARRIER = /(?:模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|大作业|竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|个人项目|开源项目|社会实践|志愿|公益|社团|学生组织)/
+  const stripNegativeContrastPrefix = (value: string) => value
+    .replace(/^(?:没有|没|无)[^，,。；;\n]{0,60}?(?:，|,)?\s*(?:但|但是|不过)\s*/, '')
+    .trim()
+  const isGenericProjectIdentity = (value: string) => {
+    const normalized = stripNegativeContrastPrefix(value)
+      .replace(/^(?:我)?(?:有(?:过)?|参加过|参与过|做过)\s*/, '')
+      .replace(/^(?:一|二|两|三|四|五|六|七|八|九|十|\d+)?\s*(?:段|个|项|篇)\s*/, '')
+      .replace(/(?:课程论文|课程研究|课程设计|毕业设计|大作业|课程(?:之外|以外|外)?|课堂(?:之外|以外|外)?|课外|校内|校外|自主|独立|个人|小组|团队|相关|数据|商业|市场|分析|研究|调研|实践|项目|活动|经历)/g, '')
+      .replace(/[的和与、，,。；;：:\s\d]/g, '')
+    return normalized.length < 2
+  }
   const parseProjectInventoryLine = (rawLine: string) => {
-    const cleaned = rawLine
+    const cleaned = stripNegativeContrastPrefix(rawLine)
       .replace(/^\s*(?:\d+[.、)]|[一二三四五六]+[、.)]|[-•·])\s*/, '')
       .replace(/^(?:我)?(?:参加过|参与过|做过|有过)\s*/, '')
       .trim()
@@ -156,12 +167,13 @@ export async function POST(req: Request) {
         .replace(/[\*#「」『』《》]/g, '').trim().slice(0, 40)
       if (/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(identity)) return []
       if (/^(?:这|该|那)(?:篇|个|项|段).{0,30}(?:是|由|属于|完成|负责|获得|得到)/.test(identity)) return []
+      if (isGenericProjectIdentity(identity)) return []
       return identity.length >= 2 ? [identity] : []
     })
   }
   const NEGATIVE_INVENTORY_ANSWER = /^(?:没有|没|无|没有了|没了|也没有|都没有|想不到|暂时没有|好像没有)[了呢啊吧。！!\s]*$/
   const parseGenericProjectInventory = (answer: string) => {
-    const trimmed = answer.trim()
+    const trimmed = stripNegativeContrastPrefix(answer.trim())
     if (!trimmed || NEGATIVE_INVENTORY_ANSWER.test(trimmed)) return []
 
     // The inventory question itself establishes that these are project
@@ -180,12 +192,14 @@ export async function POST(req: Request) {
     return semicolonOrList.flatMap(rawCandidate => {
       const candidate = rawCandidate
         .replace(/^\s*(?:\d+[.、)]|[一二两三四五六七八九十]+[、.)])\s*/, '')
-        .replace(/^(?:我)?(?:有|参加过|参与过|做过)?\s*(?:一|二|两|三|四|五|六|七|八|九|十|\d+)?\s*(?:段|个|项)\s*/, '')
+        .replace(/^(?:我)?(?:有(?:过)?|参加过|参与过|做过)\s*/, '')
+        .replace(/^(?:一|二|两|三|四|五|六|七|八|九|十|\d+)?\s*(?:段|个|项|篇)\s*/, '')
         .trim()
       if (!candidate) return []
       const identity = candidate.split(/[：:。！!]/)[0]
         .replace(/[\*#「」『』《》]/g, '').trim().slice(0, 60)
       if (identity.length < 2 || /^(?:相关)?(?:项目|比赛|竞赛|实践|活动)(?:经历)?$|^经历$/.test(identity)) return []
+      if (isGenericProjectIdentity(identity)) return []
       return [identity]
     }).slice(0, 8)
   }
@@ -811,7 +825,12 @@ export async function POST(req: Request) {
   // question. A negative or non-productive answer exhausts discovery and must
   // never trap the applicant in the project dimension.
   const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
-  const onlyConfirmedProjectAvailability = /^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(latestUserAnswer)
+  const positiveProjectClause = stripNegativeContrastPrefix(latestUserAnswer)
+  const onlyConfirmedProjectAvailability = (
+    /(?:有|做过|参加过|参与过)/.test(positiveProjectClause) &&
+    /(?:项目|竞赛|比赛|大赛|实践|活动|课程论文|课程设计|毕业设计|大作业)/.test(positiveProjectClause) &&
+    parseGenericProjectInventory(latestUserAnswer).length === 0
+  ) || /^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(latestUserAnswer)
   const shouldAskSupplementalProjectInventory = !cvText.trim() &&
     extracurricularStageAnswered && pendingProjectCandidates.length === 0 &&
     concreteExperienceCount < 3 && !supplementalProjectInventoryAnswered &&
@@ -908,6 +927,15 @@ export async function POST(req: Request) {
   const projectInventoryQuestion = isLawApplicant
     ? '除了科研和正式实习之外，你参加过模拟法庭、法律援助、法学竞赛、辩论、社会调研或其他法治实践吗？如果有，先简单列出名称就好。'
     : '课程之外，你参加过哪些与申请方向相关的竞赛、实践或自主完成的项目？如果有，先简单列出名称和大致内容就好。'
+  const projectIdentityQuestion = /(?:分析|研究|调研)/.test(positiveProjectClause)
+    ? '这个项目具体分析或研究的是什么问题？'
+    : /(?:竞赛|比赛|大赛)/.test(positiveProjectClause)
+      ? '具体是哪项竞赛，当时要完成的核心任务是什么？'
+      : /(?:课程论文|论文|课程设计|毕业设计|大作业)/.test(positiveProjectClause)
+        ? '这项课程项目具体围绕什么主题展开？'
+        : /(?:实践|活动|志愿|公益|社团|学生组织)/.test(positiveProjectClause)
+          ? '这段实践具体围绕什么事情展开？'
+          : '这个项目具体要解决什么问题？'
   const hasUserConfirmedApplicationSpecialization = messages.some(message =>
     message.role === 'user' && /(?:申请|目标(?:专业|项目|方向)|打算申请).{0,30}[\u4e00-\u9fa5A-Za-z]{2,12}方向/.test(message.content)
   )
@@ -982,7 +1010,7 @@ export async function POST(req: Request) {
   } else if (!cvText.trim() && onlyConfirmedProjectAvailability &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnObjective = 'project_identify_experience'
-    turnDirective = `自然回应申请者确实有这类经历，然后用一个开放问题请其简单介绍这段经历是什么；不要拆成“名称、赛制、案件类型、团队、角色”等多个并列小问。不要把“有一段竞赛经历”当成项目名称，也不要在尚不知道项目是什么时直接问最大困难、收获或结果。末尾输出 [ASKING:project]。`
+    turnDirective = `申请者只确认了项目类别，还没有提供可识别的项目主题、对象或目标。不要把“${positiveProjectClause.slice(0, 60) || '有一段项目'}”当作项目名称，也不要创建项目队列或询问个人职责。本轮只用这个方向追问项目身份：“${projectIdentityQuestion}”不得同时询问分工、困难、方法、结果或收获。末尾输出 [ASKING:project]。`
   } else if (!cvText.trim() && pendingDiscoveredProject &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnSubject = pendingDiscoveredProject
@@ -1114,7 +1142,9 @@ export async function POST(req: Request) {
     role: message.role,
     content: message.content,
   }))
-  const deterministicSkipDraft = controlAction === 'skip'
+  const deterministicStateDraft = turnObjective === 'project_identify_experience'
+    ? `${projectIdentityQuestion}\n\n[ASKING:project]`
+    : controlAction === 'skip'
     ? turnObjective === 'project_open_experience' && turnSubject
       ? `接下来聊“${turnSubject}”：你在其中主要负责或亲自完成了哪一部分？\n\n[ASKING:project]`
       : turnObjective === 'project_deep_dive_process' && turnSubject
@@ -1122,7 +1152,7 @@ export async function POST(req: Request) {
         : turnObjective === 'project_deep_dive_outcome' && turnSubject
           ? `“${turnSubject}”最后形成了什么结果，或者得到了什么具体反馈？\n\n[ASKING:project]`
           : turnObjective === 'project_identify_experience'
-            ? '这段经历具体是什么？先简单说名称和大致内容就好。\n\n[ASKING:project]'
+            ? `${projectIdentityQuestion}\n\n[ASKING:project]`
             : turnObjective === 'project_supplemental_inventory'
               ? '除了已经聊过的内容，还有其他项目、竞赛或实践可以补充吗？没有也可以直接说没有。\n\n[ASKING:project]'
               : turnObjective === 'motivation_major'
@@ -1133,8 +1163,8 @@ export async function POST(req: Request) {
                     ? '完成学业后，你希望先进入什么类型的岗位、行业或发展环境？\n\n[ASKING:plan]'
                     : ''
     : ''
-  let response = deterministicSkipDraft
-    ? new Response(deterministicSkipDraft, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+  let response = deterministicStateDraft
+    ? new Response(deterministicStateDraft, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
     : await streamDeepSeek(
         systemPrompt,
         modelConversation,
@@ -1463,7 +1493,7 @@ export async function POST(req: Request) {
           : turnObjective === 'project_open_experience' && turnSubject
             ? `我们先从“${turnSubject}”说起。你在这段经历中主要负责哪一部分？\n\n[ASKING:project]`
           : turnObjective === 'project_identify_experience'
-            ? `你提到有相关经历，具体是哪一项比赛、项目或实践？先说名称和大致内容就好。\n\n[ASKING:project]`
+            ? `${projectIdentityQuestion}\n\n[ASKING:project]`
           : latestAnswerIntroducesExperience
             ? `你刚提到的“${introducedExperienceName}”很值得继续聊。我们先聚焦这一次经历：当时最棘手的问题是什么？\n\n[ASKING:project]`
             : onlyConfirmedProjectAvailability
