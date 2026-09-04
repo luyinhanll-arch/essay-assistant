@@ -177,7 +177,7 @@ export async function POST(req: Request) {
       if (!candidate) return []
       const identity = candidate.split(/[：:。！!]/)[0]
         .replace(/[\*#「」『』《》]/g, '').trim().slice(0, 60)
-      if (identity.length < 2 || /^(?:相关)?(?:项目|比赛|竞赛|实践|活动|经历)$/.test(identity)) return []
+      if (identity.length < 2 || /^(?:相关)?(?:项目|比赛|竞赛|实践|活动)(?:经历)?$|^经历$/.test(identity)) return []
       return [identity]
     }).slice(0, 8)
   }
@@ -186,7 +186,8 @@ export async function POST(req: Request) {
   for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
     const message = messages[messageIndex]
     if (message.role !== 'assistant' ||
-        !['project_inventory', 'project_supplemental_inventory'].includes(message.questionObjective || '')) continue
+        !['project_inventory', 'project_supplemental_inventory', 'project_identify_experience']
+          .includes(message.questionObjective || '')) continue
     const reply = message.id
       ? messages.find(candidate => candidate.role === 'user' && candidate.replyToMessageId === message.id)
       : messages.slice(messageIndex + 1).find(candidate => candidate.role === 'user')
@@ -235,12 +236,17 @@ export async function POST(req: Request) {
   ].filter(name =>
     experienceDimensionByName.get(normalizeName(name)) === 'project' ||
     PROJECT_NAME_CARRIER.test(name))
-  const allDiscoveredProjectNames = Array.from(new Set([
-    ...inventoryProjectQueue.map(item => item.name),
+  // Structured inventory is the only queue source for protocol-v2 interviews.
+  // Legacy extraction is an all-or-nothing fallback for old transcripts; mixing
+  // both sources turns “有一段X” and “X” into two separate experiences.
+  const legacyDiscoveredProjectNames = Array.from(new Set([
     ...inferredProjectNames,
     ...directlyDeclaredProjectNames,
     ...stateOpenedProjectNames,
   ]))
+  const allDiscoveredProjectNames = inventoryProjectQueue.length > 0
+    ? inventoryProjectQueue.map(item => item.name)
+    : legacyDiscoveredProjectNames
   const projectQueueItems: ProjectQueueItem[] = [...inventoryProjectQueue]
   for (const name of allDiscoveredProjectNames) {
     if (projectQueueItems.some(item => normalizeName(item.name) === normalizeName(name))) continue
