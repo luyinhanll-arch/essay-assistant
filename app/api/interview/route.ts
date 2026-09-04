@@ -203,18 +203,22 @@ export async function POST(req: Request) {
       const message = messages[index]
       if (message.role === 'assistant') {
         const nextName = messageSource(message).match(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/i)?.[1] || ''
-        if (nextName && !isLikelyExperienceAlias(nextName, experienceName)) break
+        const nextSubject = message.questionDimension === 'project'
+          ? message.questionSubject || ''
+          : ''
+        if ((nextName && !isLikelyExperienceAlias(nextName, experienceName)) ||
+            (nextSubject && !isLikelyExperienceAlias(nextSubject, experienceName))) break
       } else if (message.content.trim().length >= 20) {
         evidenceReplies.push(message.content.trim())
       }
     }
     const evidence = evidenceReplies.join('\n')
     const hasContribution = /我.{0,12}(?:负责|承担|主导|完成|搭建|建立|设计|实现|分析|清洗|建模|撰写|组织|协调|提出|选择|决定|处理)/.test(evidence)
-    const hasChallenge = /(?:遇到|面临|出现|发现|存在).{0,24}(?:问题|困难|挑战|偏差|异常|不足|瓶颈|冲突|不一致|不合理)|(?:异常值|极端样本).{0,24}(?:直接删除|全部保留|损失|干扰|偏离)|(?:困难|挑战|难点|瓶颈|冲突|数据缺失|样本不平衡)/.test(evidence)
-    const hasSolution = /(?:为了解决|针对|于是|因此|随后|通过).{0,40}(?:调整|改进|筛选|比较|验证|重做|重新|处理|解决|采用|引入|建立|设计)|(?:没有一刀切|结合.{0,20}(?:含义|实际|业务).{0,20}(?:区分|判断|保留|剔除)|修正剔除|对比.{0,20}(?:模型|结果|输出|方案))/.test(evidence)
+    const hasChallenge = /(?:遇到|面临|出现|发现|存在).{0,24}(?:问题|困难|挑战|偏差|异常|不足|瓶颈|冲突|不一致|不合理)|(?:异常值|极端样本).{0,24}(?:直接删除|全部保留|损失|干扰|偏离)|(?:推翻|修正).{0,20}(?:预设|假设|原有思路)|(?:困难|挑战|难点|瓶颈|冲突|数据缺失|样本不平衡)/.test(evidence)
+    const hasSolution = /(?:为了解决|针对|于是|因此|随后|通过).{0,40}(?:调整|改进|筛选|比较|验证|重做|重新|处理|解决|采用|引入|建立|设计)|(?:没有一刀切|结合.{0,20}(?:含义|实际|业务).{0,20}(?:区分|判断|保留|剔除)|修正剔除|对比.{0,20}(?:模型|结果|输出|方案)|我以.{0,30}(?:结果|数据|分析).{0,20}(?:说服|证明)|(?:维持|精简|改用|采用|搭配).{0,30}(?:定价|sku|模式|方案|结构))/i.test(evidence)
     // “结果解读” describes a responsibility, not an achieved outcome. Require
     // an explicit result predicate instead of accepting the bare word “结果”.
-    const hasOutcome = /(?:最终|最后).{0,40}(?:完成|形成|实现|获得|提交|入选|获奖|提升|降低|改善)|结果(?:显示|表明|证明|为|是)|(?:成绩|获奖|评价|反馈|评委|老师).{0,20}(?:是|为|认为|肯定|认可)|(?:建议|方案|报告).{0,20}(?:采纳|落地|提交)/.test(evidence)
+    const hasOutcome = /(?:最终|最后).{0,40}(?:完成|形成|实现|获得|提交|入选|获奖|提升|降低|改善|敲定)|结果(?:显示|表明|证明|为|是)|(?:成绩|获奖|评价|反馈|评委|老师).{0,20}(?:是|为|认为|肯定|认可)|(?:建议|方案|报告|定位|卖点).{0,20}(?:采纳|落地|提交|调整|形成)|(?:维持|精简|采用|搭配|放弃).{0,30}(?:定价|sku|模式|方案|结构|思路)/i.test(evidence)
     const hasReflection = /(?:意识到|认识到|学到|明白|反思|后来发现|这让我).{0,50}/.test(evidence)
     return {
       replyCount: evidenceReplies.length,
@@ -670,7 +674,10 @@ export async function POST(req: Request) {
   const latestOpenedProjectStillOpen = [...taggedExperienceNames].reverse().find(name =>
     experienceDimensionByName.get(normalizeName(name)) === 'project' &&
     !verifiedCompletedExperienceNames.some(completed => isLikelyExperienceAlias(name, completed))) || ''
-  const pendingDiscoveredProject = activeProjectStillOpen || latestOpenedProjectStillOpen || pendingProjectCandidates[0] ||
+  // The latest explicit EXP marker is newer evidence than the active item sent
+  // by the client. During a transition the client can briefly retain the previous
+  // item; preferring it would make a third project jump backward to the second.
+  const pendingDiscoveredProject = latestOpenedProjectStillOpen || activeProjectStillOpen || pendingProjectCandidates[0] ||
     allDiscoveredProjectNames.find(name => !completedExperienceSet.has(normalizeName(name))) || ''
   const startedExperienceSet = new Set(startedExperiences.map(normalizeName))
   const targetMajorForRanking = quickInfo?.targetMajor?.trim() || quickInfo?.major?.trim() || '目标专业'
@@ -928,7 +935,13 @@ export async function POST(req: Request) {
   } else if (response.ok && experienceTargetStillOpen) {
     const skipsToLaterDimension = (draft: string) => {
       const detected = classifyInterviewQuestion(draft)
+      const questionText = draft.match(/[^。！？!?\n]*[？?]/g)?.at(-1) || draft
+      const escapedToMotivation = /(?:为什么|为何|是什么让你).{0,30}(?:申请|选择|继续读|专业|方向)|(?:申请|专业|方向).{0,30}(?:原因|动机|吸引|感兴趣)|(?:感兴趣|兴趣).{0,20}(?:专业|方向)/.test(questionText) ||
+        Boolean(quickInfo?.targetMajor?.trim() && questionText.includes(quickInfo.targetMajor.trim()) &&
+          /感兴趣|兴趣|吸引|选择|申请|决定/.test(questionText))
+      const escapedToPlan = /毕业后|读完.{0,16}(?:硕士|项目)|未来.{0,12}(?:规划|打算|方向)|职业.{0,12}(?:规划|方向|目标)/.test(questionText)
       return detected === 'motivation' || detected === 'plan' ||
+        escapedToMotivation || escapedToPlan ||
         /\[ASKING[：:]\s*(?:motivation|plan|personal)\]/i.test(draft)
     }
     const hasCurrentProjectContext = Boolean(
@@ -970,6 +983,30 @@ export async function POST(req: Request) {
       const leadSentenceCount = (leadAndQuestion.match(/[。！!]/g) || []).length
       return leadSentenceCount > 1 || /哪些[^？?]{0,80}吗[？?]/.test(text)
     }
+    const violatesProjectSubstate = (text: string) => {
+      if (authoritativeDimension !== 'project') return false
+      const questionText = text.match(/[^。！？!?\n]*[？?]/g)?.at(-1) || text
+      if (turnObjective === 'project_open_experience') {
+        return !/(?:负责|承担|亲手|贡献|角色|哪一部分|哪个部分|做了什么)/.test(questionText)
+      }
+      if (turnObjective === 'project_deep_dive_process') {
+        return !/(?:困难|挑战|难点|阻力|噪音|问题|异常|判断|取舍|棘手|卡住|怎么|如何|处理|应对|筛选|验证|调整|解决)/.test(questionText)
+      }
+      if (turnObjective === 'project_deep_dive_outcome') {
+        return !/(?:结果|成果|反馈|收获|反思|影响|产出|成绩|评价|落地|最后|最终)/.test(questionText)
+      }
+      return false
+    }
+    const switchesAwayFromServerProject = (text: string) => {
+      if (authoritativeDimension !== 'project' || !turnSubject ||
+          ['project_inventory', 'project_supplemental_inventory', 'project_identify_experience']
+            .includes(turnObjective)) return false
+      const openedNames = Array.from(text.matchAll(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/gi), match => match[1].trim())
+      if (openedNames.some(name => !isLikelyExperienceAlias(name, turnSubject))) return true
+      return allDiscoveredProjectNames.some(name =>
+        !isLikelyExperienceAlias(name, turnSubject) &&
+        text.includes(name))
+    }
     const mislabelsShortAnswerAsPaste = latestUserAnswer.length <= 12 &&
       /(?:重复粘贴|复制了一遍|上一条内容.{0,8}重复)/.test(draft)
     const mixesCurrentAndNextExperience = Boolean(activeExperience || pendingDiscoveredProject) &&
@@ -981,14 +1018,15 @@ export async function POST(req: Request) {
     const invalidDraft = questionCount !== 1 || (authoritativeDimension === 'project'
       ? !asksProjectQuestion(draft) || mixesCurrentAndNextExperience || prematurelyClosesWhileAsking ||
         mislabelsShortAnswerAsPaste || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
-        projectInventoryWordingIsInvalid(draft)
+        projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
+        violatesProjectSubstate(draft)
       : skipsToLaterDimension(draft))
     if (invalidDraft) {
       const currentHasDepth = hasDimensionDepth(authoritativeDimension, 3)
       const requiredAction = currentHasDepth
         ? '当前科研/实习已经获得充分回答，可以简短收束，但唯一的新问题必须用于发现项目经历，并输出 [ASKING:project]。'
         : `当前 ${authoritativeDimension} 尚未完成，只能继续追问这段经历的一个核心细节，并输出 [ASKING:${authoritativeDimension}]。`
-      const retryPrompt = `${systemPrompt}\n\n## 【上次生成未通过服务器校验】\n你刚才偏离了服务器指定的当前经历任务，或在一个问题中捆绑了多个信息点；该结果已被拦截。${requiredAction}项目首问只能从项目内容、个人分工中选择一项询问，不能同时问两项；尚未收到首问回答时禁止输出 [EXP_DONE:]。不得出现任何申请原因、毕业规划或个人特质问题。`
+      const retryPrompt = `${systemPrompt}\n\n## 【上次生成未通过服务器校验】\n你刚才偏离了服务器指定的当前经历任务、擅自切换了项目，或在一个问题中捆绑了多个信息点；该结果已被拦截。${requiredAction}服务器指定的当前项目是“${turnSubject || '当前经历'}”，不得提问、预告或输出 [EXP:] 打开其他项目。项目首问只能从项目内容、个人分工中选择一项询问，不能同时问两项；尚未收到首问回答时禁止输出 [EXP_DONE:]。不得出现任何申请原因、毕业规划或个人特质问题。`
       const retryResponse = await streamDeepSeek(
         retryPrompt,
         modelConversation,
@@ -1001,7 +1039,8 @@ export async function POST(req: Request) {
     const retryStillInvalid = (draft.match(/[？?]/g) || []).length !== 1 || (authoritativeDimension === 'project'
       ? !asksProjectQuestion(draft) || retryMixesExperiences ||
         projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
-        projectInventoryWordingIsInvalid(draft)
+        projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
+        violatesProjectSubstate(draft)
       : skipsToLaterDimension(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
