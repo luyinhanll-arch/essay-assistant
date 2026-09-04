@@ -843,11 +843,12 @@ export async function POST(req: Request) {
     }
   }
   const concreteExperienceCount = canonicalExperienceNames.length
-  const targetExperienceCount = announcedResearchCount > 0 && announcedInternshipCount > 0 ? 4 : 3
+  const targetExperienceCount = 3
+  const preferredMaximumExperienceCount = 4
 
-  // Use the pre-screen combination to choose a three- or four-story target, but
-  // allow only one course/thesis fallback. The target must never trap the
-  // applicant in the project dimension.
+  // Three completed stories are enough to advance for every pre-screen
+  // combination. A fourth is useful only when it already exists and is worth
+  // interviewing; it must never trigger course/thesis fallback by itself.
   const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
   const positiveProjectClause = stripNegativeContrastPrefix(latestUserAnswer)
   const onlyConfirmedProjectAvailability = (
@@ -1083,7 +1084,7 @@ export async function POST(req: Request) {
     }
   } else if (!cvText.trim() && missing[0] === 'project' && shouldAskSupplementalProjectInventory) {
     turnObjective = 'project_supplemental_inventory'
-    turnDirective = `当前已完成 ${concreteExperienceCount} 段有效经历，目标是 ${targetExperienceCount} 段。高优先级经历已经盘点完，本轮只进行一次课程项目兜底盘点，问题方向是：“${fallbackProjectInventoryQuestion}”不要向用户解释内部数量目标、含金量或排序，也不得拆成多轮分类追问。用户没有就接受并推进。末尾输出 [ASKING:project]。`
+    turnDirective = `当前已完成 ${concreteExperienceCount} 段有效经历，完成 3 段即可进入后续维度。高优先级经历已经盘点完，本轮只进行一次课程项目兜底盘点，问题方向是：“${fallbackProjectInventoryQuestion}”不要向用户解释内部数量目标、含金量或排序，也不得拆成多轮分类追问。用户没有就接受并推进。末尾输出 [ASKING:project]。`
   } else if (!cvText.trim() &&
       (missing[0] === 'project' || readyToEnterProject) && !extracurricularStageAnswered) {
     turnObjective = 'project_inventory'
@@ -1156,7 +1157,7 @@ export async function POST(req: Request) {
     const countedNames = canonicalExperienceNames.length > 0
       ? canonicalExperienceNames.map((name, index) => `${index + 1}. ${name}`).join('\n')
       : '（暂无）'
-    systemPrompt += `\n\n## 【有效经历目标】\n${targetDescription}。当前已完成的有效经历为 ${concreteExperienceCount} 段：\n${countedNames}\n本次目标是 ${targetExperienceCount} 段有效经历${targetExperienceCount === 4 ? '（科研与实习均存在，因此合计以四段为宜）' : ''}。先问科研和实习，再盘点与申请专业更相关、投入和产出更充分的项目；若仍不足，只进行一次课程项目、课程论文或毕业论文/设计兜底盘点。用户明确没有，或兜底后仍不足目标，都必须接受真实库存并进入申请动机。不要继续换类别或换措辞反复追问，也不得把同一经历换标题重复计数。`
+    systemPrompt += `\n\n## 【有效经历目标】\n${targetDescription}。当前已完成的有效经历为 ${concreteExperienceCount} 段：\n${countedNames}\n科研、实习和项目合计优先收集 3–4 段有效经历；完成 3 段后即可进入后续维度，4 段只是已有优质素材较充足时的理想上限参考，不是推进门槛。先问科研和实习，再盘点与申请专业更相关、投入和产出更充分的项目；仅在不足 3 段时进行一次课程项目、课程论文或毕业论文/设计兜底盘点，不得为了凑第 4 段触发兜底。用户明确没有，或兜底后仍不足 3 段，都必须接受真实库存并进入申请动机。不要继续换类别或换措辞反复追问，也不得把同一经历换标题重复计数。`
 
     const resolvedUnavailable = (['research', 'internship'] as const)
       .filter(dimension => effectiveEmptyDimensions.includes(dimension))
@@ -1762,6 +1763,7 @@ export async function POST(req: Request) {
   response.headers.set('X-Interview-Empty', effectiveEmptyDimensions.join(','))
   response.headers.set('X-Interview-Experience-Count', String(concreteExperienceCount))
   response.headers.set('X-Interview-Experience-Target', String(targetExperienceCount))
+  response.headers.set('X-Interview-Experience-Preferred-Max', String(preferredMaximumExperienceCount))
   response.headers.set('X-Interview-Plan', encodeURIComponent(JSON.stringify({
     dimension: responseDimension,
     objective: responseObjective,
@@ -1769,6 +1771,7 @@ export async function POST(req: Request) {
     subjectId: turnSubjectId,
     effectiveExperienceCount: concreteExperienceCount,
     targetExperienceCount,
+    preferredMaximumExperienceCount,
   })))
   response.headers.set(
     'X-Interview-Needs-More-Experiences',
