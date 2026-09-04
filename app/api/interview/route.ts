@@ -135,6 +135,14 @@ export async function POST(req: Request) {
   const stripNegativeContrastPrefix = (value: string) => value
     .replace(/^(?:没有|没|无)[^，,。；;\n]{0,60}?(?:，|,)?\s*(?:但|但是|不过)\s*/, '')
     .trim()
+  const isNegativeProjectInventoryAnswer = (value: string) => {
+    if (/(?:但|但是|不过|然而).{0,20}(?:有|做过|参加过|参与过)/.test(value)) return false
+    const normalized = value
+      .replace(/(?:课程作业|课程项目|课程论文|课程设计|毕业论文|毕业设计|大作业|竞赛|比赛|项目|实践|活动|经历)/g, '')
+      .replace(/(?:可以|能够|值得)?(?:展开|补充|聊|说|分享)(?:一下|的)?/g, '')
+      .replace(/(?:我|也|都|还|确实|目前|暂时|其他|别的|任何|什么|和|与|、|，|,|。|；|;|！|!|\s)/g, '')
+    return /^(?:没有|没|无|没有了|没了|想不到|不记得)$/.test(normalized)
+  }
   const isGenericProjectIdentity = (value: string) => {
     const normalized = stripNegativeContrastPrefix(value)
       .replace(/^(?:我)?(?:有(?:过)?|参加过|参与过|做过)\s*/, '')
@@ -144,6 +152,7 @@ export async function POST(req: Request) {
     return normalized.length < 2
   }
   const parseProjectInventoryLine = (rawLine: string) => {
+    if (isNegativeProjectInventoryAnswer(rawLine)) return []
     const cleaned = stripNegativeContrastPrefix(rawLine)
       .replace(/^\s*(?:\d+[.、)]|[一二三四五六]+[、.)]|[-•·])\s*/, '')
       .replace(/^(?:我)?(?:参加过|参与过|做过|有过)\s*/, '')
@@ -171,10 +180,9 @@ export async function POST(req: Request) {
       return identity.length >= 2 ? [identity] : []
     })
   }
-  const NEGATIVE_INVENTORY_ANSWER = /^(?:没有|没|无|没有了|没了|也没有|都没有|想不到|暂时没有|好像没有)[了呢啊吧。！!\s]*$/
   const parseGenericProjectInventory = (answer: string) => {
     const trimmed = stripNegativeContrastPrefix(answer.trim())
-    if (!trimmed || NEGATIVE_INVENTORY_ANSWER.test(trimmed)) return []
+    if (!trimmed || isNegativeProjectInventoryAnswer(answer)) return []
 
     // The inventory question itself establishes that these are project
     // candidates. Parse the applicant's list structure instead of requiring a
@@ -278,6 +286,26 @@ export async function POST(req: Request) {
       order: projectQueueItems.length,
     })
   }
+  const projectDisciplineText = `${quickInfo?.major || ''} ${quickInfo?.targetMajor || ''}`
+  const projectPriorityScore = (name: string) => {
+    let score = 0
+    if (/国家级|全国|国际|省级|一等奖|二等奖|金奖|银奖|获奖|入选|发表|录用|落地|上线/.test(name)) score += 30
+    if (/竞赛|比赛|大赛|挑战杯|创新创业|模拟法庭|辩论/.test(name)) score += 18
+    if (/自主|独立|主导|负责人|开源|产品|系统|平台|干预方案/.test(name)) score += 12
+    if (/课程作业|大作业|课程项目|课程论文|毕业论文|毕业设计|课程设计/.test(name)) score -= 12
+
+    if (/法学|法律|law\b|llm\b/i.test(projectDisciplineText) &&
+        /法律|法治|模拟法庭|法律援助|案例|裁判|诉讼|仲裁|合规|辩论|社会调研/.test(name)) score += 35
+    if (/工商|管理|市场|营销|金融|会计|经济|商科|business|marketing|finance|economics/i.test(projectDisciplineText) &&
+        /商业|市场|营销|咨询|创业|品牌|案例|策划|调研|金融|投资|消费者|用户/.test(name)) score += 35
+    if (/计算机|软件|数据|人工智能|电子|电气|工程|机械|材料|物理|化学|生物|computer|engineering|science/i.test(projectDisciplineText) &&
+        /系统|软件|算法|模型|建模|工程|设计|开发|数据|实验|机器人|电路|材料|开源/.test(name)) score += 35
+    if (/心理|认知|行为|教育学|社会学|psychology|cognitive|behavior|sociology/i.test(projectDisciplineText) &&
+        /心理|认知|行为|用户研究|可用性|社会调研|问卷|访谈|测评|干预|咨询|数据分析/.test(name)) score += 35
+    return score
+  }
+  projectQueueItems.sort((left, right) =>
+    projectPriorityScore(right.name) - projectPriorityScore(left.name) || left.order - right.order)
   const getDirectAnswer = (questionIndex: number) => {
     const question = messages[questionIndex]
     if (!question || question.role !== 'assistant') return undefined
@@ -302,6 +330,34 @@ export async function POST(req: Request) {
     closed: boolean
     materialComplete: boolean
   }
+  const parseStructuredExperienceIdentities = (
+    dimension: 'research' | 'internship',
+    answer: string,
+  ) => {
+    const segments = answer
+      .replace(/[\r\n；;]+/g, '\n')
+      .replace(/[，,。]\s*(?=(?:第?[一二两三四五六七八九十\d]+段|另(?:一|外一?)段))/g, '\n')
+      .split('\n')
+      .map(segment => segment
+        .replace(/^\s*(?:[-•·]|\d+[.、)]|[一二两三四五六七八九十]+[、.)])\s*/, '')
+        .replace(/^(?:第?[一二两三四五六七八九十\d]+段|另(?:一|外一?)段)\s*(?:是|为)?\s*/, '')
+        .replace(/^(?:我)?(?:有|做过|参加过|参与过)\s*/, '')
+        .replace(/^在(?=[\u4e00-\u9fa5A-Za-z])/, '')
+        .trim())
+      .filter(Boolean)
+
+    const genericPattern = dimension === 'research'
+      ? /^(?:没有|没|无|有|有过|科研|研究|科研经历|研究经历|一段科研|两段科研|[一二两三四五六七八九十\d]+段(?:科研|研究)(?:经历)?)[了呢啊吧。！!\s]*$/
+      : /^(?:没有|没|无|有|有过|实习|实习经历|一段实习|两段实习|[一二两三四五六七八九十\d]+段实习(?:经历)?)[了呢啊吧。！!\s]*$/
+    const identities: string[] = []
+    for (const segment of segments) {
+      if (genericPattern.test(segment)) continue
+      const identity = segment.split(/[。；;！!\n]/)[0].trim().slice(0, 48)
+      if (identity.length < 2 || identities.some(existing => isLikelyExperienceAlias(existing, identity))) continue
+      identities.push(identity)
+    }
+    return identities
+  }
   const getStructuredExperienceProgress = (dimension: 'research' | 'internship') => {
     const objectiveToStage: Record<string, StructuredExperienceStage> = {
       [`${dimension}_open_experience`]: 'identity',
@@ -319,25 +375,38 @@ export async function POST(req: Request) {
       materialComplete: false,
     })
     const arcs: StructuredExperienceArc[] = []
-    let current: StructuredExperienceArc | undefined
     messages.forEach((message, messageIndex) => {
       if (message.role !== 'assistant' || message.questionDimension !== dimension) return
       const stage = objectiveToStage[message.questionObjective || '']
       if (!stage) return
-      if (!current || (stage === 'identity' && current.closed)) {
+      let current = arcs.find(arc => !arc.closed)
+      if (!current || (stage === 'identity' && current.resolved.identity)) {
         current = blankArc(arcs.length + 1)
         arcs.push(current)
       }
       const answer = getDirectAnswer(messageIndex)
       const wasSkipped = skippedQuestionIdSet.has(message.id || '')
       if (answer?.content.trim()) {
-        current.answered[stage] = true
         if (stage === 'identity') {
-          current.label = answer.content
+          const identities = parseStructuredExperienceIdentities(dimension, answer.content)
+          const [firstIdentity, ...additionalIdentities] = identities
+          current.label = firstIdentity || answer.content
             .split(/[。；;！!\n]/)[0]
             .replace(/^[我]?在/u, '')
             .trim()
             .slice(0, 48)
+          current.answered.identity = true
+          current.resolved.identity = true
+          for (const identity of additionalIdentities) {
+            if (arcs.some(arc => isLikelyExperienceAlias(arc.label, identity))) continue
+            const queuedArc = blankArc(arcs.length + 1)
+            queuedArc.label = identity
+            queuedArc.answered.identity = true
+            queuedArc.resolved.identity = true
+            arcs.push(queuedArc)
+          }
+        } else {
+          current.answered[stage] = true
         }
       }
       if (wasSkipped) current.skipped[stage] = true
@@ -351,7 +420,7 @@ export async function POST(req: Request) {
       arcs,
       completedCount: arcs.filter(arc => arc.closed).length,
       materialCompleteCount: arcs.filter(arc => arc.materialComplete).length,
-      currentArc: [...arcs].reverse().find(arc => !arc.closed),
+      currentArc: arcs.find(arc => !arc.closed),
     }
   }
   const getProjectQueueProgress = (item: ProjectQueueItem) => {
@@ -603,42 +672,6 @@ export async function POST(req: Request) {
     'project_supplemental_inventory',
     SUPPLEMENTAL_PROJECT_INVENTORY_QUESTION,
   )
-  const PROJECT_INVENTORY_QUESTION = /(?:(?:有没有|是否有|参加过|做过|还有|另外|再补充|再想想|除此之外|除已谈内容外).{0,80}(?:项目|竞赛|比赛|大赛|模拟法庭|法律援助|课程项目|课程设计|课程论文|毕业设计|社会实践|志愿|公益|社团|学生组织|实践|活动)|(?:项目|竞赛|比赛|大赛|模拟法庭|法律援助|课程项目|课程设计|课程论文|毕业设计|社会实践|志愿|公益|社团|学生组织).{0,60}(?:有没有|是否有|列出|名称|大致内容))/
-  const NEGATIVE_PROJECT_INVENTORY_REPLY = /^(?:没有|没|无|没有了|没了|也没有|都没有|想不到|暂时没有|好像没有|没有特别合适的|没有其他了|没有别的了)[了呢啊吧。！!\s]*$/
-  // A short answer such as “没了” only exhausts discovery when it is the direct
-  // reply to a server-identified project inventory question. Opening target-school
-  // checks and research/internship pre-screening must never close this dimension.
-  const projectDiscoveryDeclined = messages.some((message, index) => {
-    if (message.role !== 'assistant') return false
-    const source = messageSource(message)
-    const belongsToProject = message.questionDimension === 'project' ||
-      /\[ASKING[：:]\s*project\]/i.test(source)
-    if (!belongsToProject) return false
-
-    const isInventoryQuestion = ['project_inventory', 'project_supplemental_inventory']
-      .includes(message.questionObjective || '') ||
-      (!message.questionObjective && PROJECT_INVENTORY_QUESTION.test(source))
-    if (!isInventoryQuestion) return false
-
-    const explicitlyBoundReply = message.id
-      ? messages.find(candidate =>
-          candidate.role === 'user' && candidate.replyToMessageId === message.id)
-      : undefined
-    let adjacentReply: Message | undefined
-    if (!explicitlyBoundReply) {
-      for (let replyIndex = index + 1; replyIndex < messages.length; replyIndex += 1) {
-        const candidate = messages[replyIndex]
-        if (candidate.role === 'assistant') break
-        if (candidate.role === 'user') {
-          adjacentReply = candidate
-          break
-        }
-      }
-    }
-    const reply = explicitlyBoundReply || adjacentReply
-    return skippedQuestionIdSet.has(message.id || '') ||
-      Boolean(reply && NEGATIVE_PROJECT_INVENTORY_REPLY.test(reply.content.trim()))
-  })
   const projectIsInCurrentWindow = messages.some(message =>
     message.role === 'assistant' && /\[ASKING[：:]\s*project\]/i.test(messageSource(message)))
   // Queue position, not the spelling of a project name, controls progress.
@@ -655,16 +688,6 @@ export async function POST(req: Request) {
   if (!cvText.trim() && effectiveCoveredDimensions.includes('project') && projectIsInCurrentWindow &&
       (!extracurricularStageAnswered || pendingProjectCandidates.length > 0)) {
     effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'project')
-  }
-  if (!cvText.trim() && projectDiscoveryDeclined && pendingProjectCandidates.length === 0 &&
-      !effectiveCoveredDimensions.includes('project')) {
-    effectiveCoveredDimensions.push('project')
-  }
-  // The first pass only interviews projects the applicant actually volunteered.
-  // Once that queue is empty, project is complete regardless of a numeric target.
-  if (!cvText.trim() && extracurricularStageAnswered && pendingProjectCandidates.length === 0 &&
-      allDiscoveredProjectNames.length > 0 && !effectiveCoveredDimensions.includes('project')) {
-    effectiveCoveredDimensions.push('project')
   }
   const MAJOR_MOTIVATION_QUESTION = /为什么.{0,24}(?:选择|申请|深耕|继续).{0,24}(?:专业|方向)|(?:专业|方向).{0,24}(?:吸引|兴趣|契机|为什么)|是什么让你.{0,16}(?:决定|想).{0,16}(?:继续读|申请|深耕|沿着.*方向)/
   const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -820,30 +843,33 @@ export async function POST(req: Request) {
     }
   }
   const concreteExperienceCount = canonicalExperienceNames.length
+  const targetExperienceCount = announcedResearchCount > 0 && announcedInternshipCount > 0 ? 4 : 3
 
-  // Aim for three useful stories, but allow only one supplemental inventory
-  // question. A negative or non-productive answer exhausts discovery and must
-  // never trap the applicant in the project dimension.
+  // Use the pre-screen combination to choose a three- or four-story target, but
+  // allow only one course/thesis fallback. The target must never trap the
+  // applicant in the project dimension.
   const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
   const positiveProjectClause = stripNegativeContrastPrefix(latestUserAnswer)
   const onlyConfirmedProjectAvailability = (
+    !isNegativeProjectInventoryAnswer(latestUserAnswer) &&
     /(?:有|做过|参加过|参与过)/.test(positiveProjectClause) &&
     /(?:项目|竞赛|比赛|大赛|实践|活动|课程论文|课程设计|毕业设计|大作业)/.test(positiveProjectClause) &&
     parseGenericProjectInventory(latestUserAnswer).length === 0
   ) || /^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(latestUserAnswer)
   const shouldAskSupplementalProjectInventory = !cvText.trim() &&
     extracurricularStageAnswered && pendingProjectCandidates.length === 0 &&
-    concreteExperienceCount < 3 && !supplementalProjectInventoryAnswered &&
-    !projectDiscoveryDeclined
+    concreteExperienceCount < targetExperienceCount && !supplementalProjectInventoryAnswered
   const supplementalAnswerNeedsIdentity = !cvText.trim() &&
     supplementalProjectInventoryAnswered && onlyConfirmedProjectAvailability &&
     pendingProjectCandidates.length === 0
   if (shouldAskSupplementalProjectInventory || supplementalAnswerNeedsIdentity) {
     effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'project')
-  } else if (!cvText.trim() && supplementalProjectInventoryAnswered &&
-      pendingProjectCandidates.length === 0 && !effectiveCoveredDimensions.includes('project')) {
-    // The single extra discovery opportunity has been consumed. Even if the
-    // answer yields no countable story, accept the real inventory and move on.
+  } else if (!cvText.trim() && extracurricularStageAnswered &&
+      pendingProjectCandidates.length === 0 &&
+      (concreteExperienceCount >= targetExperienceCount || supplementalProjectInventoryAnswered) &&
+      !effectiveCoveredDimensions.includes('project')) {
+    // The target has been reached, or the single course/thesis fallback has
+    // been consumed. In either case accept the real inventory and move on.
     effectiveCoveredDimensions.push('project')
   }
 
@@ -917,6 +943,7 @@ export async function POST(req: Request) {
   const isLawApplicant = /法学|法律|law\b|llm\b/i.test(applicantDisciplineText)
   const isBusinessApplicant = /工商|管理|市场|营销|金融|会计|经济|商科|business|marketing|finance|economics/i.test(applicantDisciplineText)
   const isTechnicalApplicant = /计算机|软件|数据|人工智能|电子|电气|工程|机械|材料|物理|化学|生物|computer|engineering|science/i.test(applicantDisciplineText)
+  const isPsychologyApplicant = /心理|认知|行为|教育学|社会学|psychology|cognitive|behavior|sociology/i.test(applicantDisciplineText)
   const academicRecallGuide = isLawApplicant
     ? '可以从一个印象较深的制度、案例或争议说起，再说它后来提醒你看法律问题时多注意什么'
     : isBusinessApplicant
@@ -926,7 +953,22 @@ export async function POST(req: Request) {
         : '可以从一个印象较深的概念、案例或任务说起，再说它后来怎样影响你理解专业问题'
   const projectInventoryQuestion = isLawApplicant
     ? '除了科研和正式实习之外，你参加过模拟法庭、法律援助、法学竞赛、辩论、社会调研或其他法治实践吗？如果有，先简单列出名称就好。'
-    : '课程之外，你参加过哪些与申请方向相关的竞赛、实践或自主完成的项目？如果有，先简单列出名称和大致内容就好。'
+    : isBusinessApplicant
+      ? '除了科研和正式实习之外，你参加过商业竞赛、案例分析、市场调研、创业实践或其他较完整的商科项目吗？如果有，先说名称和大致任务就好。'
+      : isTechnicalApplicant
+        ? '除了科研和正式实习之外，你参加过学科竞赛、工程设计、系统开发、开源项目或其他较完整的技术项目吗？如果有，先说名称和大致任务就好。'
+        : isPsychologyApplicant
+          ? '除了科研和正式实习之外，你参加过心理学竞赛、用户研究、社会调研、心理服务或自主数据分析等较完整的项目吗？如果有，先说名称和大致内容就好。'
+          : '课程之外，你参加过哪些与申请方向相关的竞赛、实践或自主完成的项目？如果有，先简单列出名称和大致内容就好。'
+  const fallbackProjectInventoryQuestion = isLawApplicant
+    ? '除了前面聊到的经历，你还有课程论文、毕业论文、案例研究或其他较完整的法学课程项目吗？有的话先说名称和主题，没有也没关系。'
+    : isBusinessApplicant
+      ? '除了前面聊到的经历，你还有课程案例、商业策划、课程调研或毕业论文等较完整的课程项目吗？有的话先说名称和大致任务，没有也没关系。'
+      : isTechnicalApplicant
+        ? '除了前面聊到的经历，你还有课程设计、综合大作业、毕业设计或毕业论文等较完整的项目吗？有的话先说名称和大致任务，没有也没关系。'
+        : isPsychologyApplicant
+          ? '除了前面聊到的经历，你还有研究方法课程项目、独立分析作业、毕业论文或其他较完整的课程项目吗？有的话先说主题和大致内容，没有也没关系。'
+          : '除了前面聊到的经历，你还有课程项目、毕业论文或毕业设计等较完整的经历吗？有的话先说名称和大致内容，没有也没关系。'
   const projectIdentityQuestion = /(?:分析|研究|调研)/.test(positiveProjectClause)
     ? '这个项目具体分析或研究的是什么问题？'
     : /(?:竞赛|比赛|大赛)/.test(positiveProjectClause)
@@ -980,7 +1022,7 @@ export async function POST(req: Request) {
       turnDirective = `${progress.completedCount > 0 ? `前 ${progress.completedCount} 段科研已经完成，继续预筛中提到的下一段。` : '学术背景已经完成，现在按右栏顺序进入科研经历。'}本轮只询问这段科研主要研究什么问题、课题或方向；不要同时询问个人职责、研究方法、困难或结果，不得再次确认有没有科研，也不得切换到实习。用户回答前不要输出 [EXP:]。末尾输出 [ASKING:research]。`
     } else if (!arc.resolved.contribution) {
       turnObjective = 'research_experience_contribution'
-      turnDirective = `继续当前科研“${turnSubject || `第 ${arcIndex} 段科研`}”。研究主题已经得到回答，本轮只询问申请者在其中具体负责、参与或亲自完成了什么；不得直接跳到困难、判断、方法细节或结果。首次获得经历名称后，用准确简短名称输出 [EXP:经历简称]。末尾输出 [ASKING:research]。`
+      turnDirective = `${progress.completedCount > 0 ? `上一段科研已经结束，自然转到用户先前列出的下一段“${turnSubject || `第 ${arcIndex} 段科研`}”。` : `继续“${turnSubject || `第 ${arcIndex} 段科研`}”。`}研究主题已经得到回答，本轮只询问申请者在其中具体负责、参与或亲自完成了什么；不要重新询问研究主题，也不得直接跳到结果。首次获得经历名称后，用准确简短名称输出 [EXP:经历简称]。末尾输出 [ASKING:research]。`
     } else if (!arc.resolved.process) {
       turnObjective = 'research_deep_dive_process'
       turnDirective = `继续当前科研“${turnSubject || `第 ${arcIndex} 段科研`}”。研究主题和个人贡献已经清楚，本轮只询问一个真实遇到的研究难点、关键判断或方法取舍，以及当时如何处理；不得虚构具体困难，不得询问结果或切换经历。末尾输出 [ASKING:research]。`
@@ -999,7 +1041,7 @@ export async function POST(req: Request) {
       turnDirective = `${progress.completedCount > 0 ? `前 ${progress.completedCount} 段实习已经完成，继续预筛中提到的下一段。` : '科研维度已经完成，现在按右栏顺序进入实习经历。'}本轮只询问这段实习所在的单位/机构和岗位或工作方向，让用户用一句话说明即可；不要同时询问具体职责、困难、处理方法或结果，不得再次确认有没有实习。用户回答前不要输出 [EXP:]。末尾输出 [ASKING:internship]。`
     } else if (!arc.resolved.contribution) {
       turnObjective = 'internship_experience_contribution'
-      turnDirective = `继续当前实习“${turnSubject || `第 ${arcIndex} 段实习`}”。单位和岗位方向已经得到回答，本轮只询问申请者日常具体负责或亲自完成的主要工作；不得直接跳到困难、关键判断或结果。首次获得经历名称后，用准确简短名称输出 [EXP:经历简称]。末尾输出 [ASKING:internship]。`
+      turnDirective = `${progress.completedCount > 0 ? `上一段实习已经结束，自然转到用户先前列出的下一段“${turnSubject || `第 ${arcIndex} 段实习`}”。` : `继续“${turnSubject || `第 ${arcIndex} 段实习`}”。`}单位或工作方向已经得到回答，本轮只询问申请者日常具体负责或亲自完成的主要工作；不要重新询问单位，不得直接跳到结果。首次获得经历名称后，用准确简短名称输出 [EXP:经历简称]。末尾输出 [ASKING:internship]。`
     } else if (!arc.resolved.process) {
       turnObjective = 'internship_deep_dive_process'
       turnDirective = `继续当前实习“${turnSubject || `第 ${arcIndex} 段实习`}”。单位、岗位和具体职责已经清楚，本轮只询问一件实际遇到的难题、关键判断或重要取舍，以及当时如何处理；不得虚构业务问题，不得询问结果或切换经历。末尾输出 [ASKING:internship]。`
@@ -1041,9 +1083,7 @@ export async function POST(req: Request) {
     }
   } else if (!cvText.trim() && missing[0] === 'project' && shouldAskSupplementalProjectInventory) {
     turnObjective = 'project_supplemental_inventory'
-    turnDirective = isLawApplicant
-      ? `当前只有 ${concreteExperienceCount} 段有效经历。只再补问一次：除已谈内容外，课程论文、课程研究、模拟法庭、法律援助、法学竞赛、社会调研或学生组织中，是否还有一段能体现申请者实际投入和产出的经历？有则只请其说名称与大致内容；没有也可以明确回答没有。不得拆成多轮分类追问。末尾输出 [ASKING:project]。`
-      : `当前只有 ${concreteExperienceCount} 段有效经历。只再补问一次：除已谈内容外，课程项目、竞赛、实践、学生组织或自主项目中，是否还有一段能体现申请者实际投入和产出的经历？有则只请其说名称与大致内容；没有也可以明确回答没有。不得拆成多轮分类追问。末尾输出 [ASKING:project]。`
+    turnDirective = `当前已完成 ${concreteExperienceCount} 段有效经历，目标是 ${targetExperienceCount} 段。高优先级经历已经盘点完，本轮只进行一次课程项目兜底盘点，问题方向是：“${fallbackProjectInventoryQuestion}”不要向用户解释内部数量目标、含金量或排序，也不得拆成多轮分类追问。用户没有就接受并推进。末尾输出 [ASKING:project]。`
   } else if (!cvText.trim() &&
       (missing[0] === 'project' || readyToEnterProject) && !extracurricularStageAnswered) {
     turnObjective = 'project_inventory'
@@ -1116,7 +1156,7 @@ export async function POST(req: Request) {
     const countedNames = canonicalExperienceNames.length > 0
       ? canonicalExperienceNames.map((name, index) => `${index + 1}. ${name}`).join('\n')
       : '（暂无）'
-    systemPrompt += `\n\n## 【三段有效经历目标】\n${targetDescription}。当前已完成的有效经历为 ${concreteExperienceCount} 段：\n${countedNames}\n进入申请动机前优先收集 3 段有效经历。科研、实习和首次项目清单处理完后若仍不足 3 段，只允许再进行一次综合补充盘点；用户明确没有，或该次补充仍不足 3 段，都必须接受真实库存并进入申请动机。严禁继续换类别、换措辞或拆成课程作业、学生组织、志愿活动等多轮追问。不得把同一经历换标题重复计数。`
+    systemPrompt += `\n\n## 【有效经历目标】\n${targetDescription}。当前已完成的有效经历为 ${concreteExperienceCount} 段：\n${countedNames}\n本次目标是 ${targetExperienceCount} 段有效经历${targetExperienceCount === 4 ? '（科研与实习均存在，因此合计以四段为宜）' : ''}。先问科研和实习，再盘点与申请专业更相关、投入和产出更充分的项目；若仍不足，只进行一次课程项目、课程论文或毕业论文/设计兜底盘点。用户明确没有，或兜底后仍不足目标，都必须接受真实库存并进入申请动机。不要继续换类别或换措辞反复追问，也不得把同一经历换标题重复计数。`
 
     const resolvedUnavailable = (['research', 'internship'] as const)
       .filter(dimension => effectiveEmptyDimensions.includes(dimension))
@@ -1269,6 +1309,8 @@ export async function POST(req: Request) {
     : ''
   const deterministicStateDraft = deterministicRephraseDraft
     ? deterministicRephraseDraft
+    : turnObjective === 'project_supplemental_inventory'
+      ? `${fallbackProjectInventoryQuestion}\n\n[ASKING:project]`
     : turnObjective === 'project_identify_experience'
     ? `${projectIdentityQuestion}\n\n[ASKING:project]`
     : controlAction === 'skip'
@@ -1455,20 +1497,6 @@ export async function POST(req: Request) {
       const leadSentenceCount = (leadAndQuestion.match(/[。！!]/g) || []).length
       return leadSentenceCount > 1 || /哪些[^？?]{0,80}吗[？?]/.test(text)
     }
-    const violatesProjectSubstate = (text: string) => {
-      if (authoritativeDimension !== 'project') return false
-      const questionText = text.match(/[^。！？!?\n]*[？?]/g)?.at(-1) || text
-      if (turnObjective === 'project_open_experience') {
-        return !/(?:负责|承担|亲手|贡献|角色|哪一部分|哪个部分|做了什么)/.test(questionText)
-      }
-      if (turnObjective === 'project_deep_dive_process') {
-        return !/(?:困难|挑战|难点|阻力|噪音|问题|异常|判断|取舍|棘手|卡住|怎么|如何|处理|应对|筛选|验证|调整|解决)/.test(questionText)
-      }
-      if (turnObjective === 'project_deep_dive_outcome') {
-        return !/(?:结果|成果|反馈|收获|反思|影响|产出|成绩|评价|落地|最后|最终)/.test(questionText)
-      }
-      return false
-    }
     const switchesAwayFromServerProject = (text: string) => {
       if (authoritativeDimension !== 'project' || !turnSubject ||
           ['project_inventory', 'project_supplemental_inventory', 'project_identify_experience']
@@ -1497,6 +1525,9 @@ export async function POST(req: Request) {
     )
     const restartsInterview = (text: string) =>
       /(?:正式开始前|开始之前|先快速确认|在正式聊背景之前).{0,100}(?:科研|实习)|(?:你在|目前就读).{0,80}(?:GPA|申请|目标).{0,120}(?:正式开始|先问一句)/.test(text)
+    const bundlesMultipleFormalExperiences = (text: string) =>
+      ['research_open_experience', 'internship_open_experience'].includes(turnObjective) &&
+      /(?:两|二|2|多|几)段.{0,30}(?:分别|各自)|分别.{0,40}(?:单位|机构|岗位|课题|研究|科研|实习)/.test(text)
     const asksExpectedExperienceDimension = (text: string) => {
       if (authoritativeDimension === 'research') {
         const wronglyAsksInternship = /(?:实习.{0,30}(?:单位|公司|岗位|工作|负责|在哪里)|(?:在哪里|哪家|什么岗位).{0,20}实习)/.test(text)
@@ -1511,37 +1542,6 @@ export async function POST(req: Request) {
         return asksInternship && !wronglyAsksResearch
       }
       return true
-    }
-    const violatesExperienceSubstate = (text: string) => {
-      if (!['research', 'internship'].includes(authoritativeDimension)) return false
-      const questionText = text.match(/[^。！？!?\n]*[？?]/g)?.at(-1) || text
-      switch (turnObjective) {
-        case 'research_open_experience':
-          return !/(?:研究|科研|课题|方向|主题|问题|实验室|课题组).{0,40}(?:什么|哪|介绍|围绕)|(?:什么|哪).{0,30}(?:研究|科研|课题|方向|主题|问题|实验室|课题组)/.test(questionText) ||
-            /(?:负责|贡献|困难|挑战|结果|成果|反馈)/.test(questionText)
-        case 'internship_open_experience':
-          return !/(?:实习|单位|公司|机构|岗位|部门|工作方向).{0,40}(?:哪里|哪家|什么|介绍)|(?:哪里|哪家|什么).{0,30}(?:实习|单位|公司|机构|岗位|部门|工作方向)/.test(questionText) ||
-            /(?:具体负责|主要工作|困难|挑战|结果|成果|反馈)/.test(questionText)
-        case 'research_experience_contribution':
-        case 'internship_experience_contribution':
-          return !/(?:具体|日常|主要).{0,20}(?:负责|参与|完成|工作|任务)|(?:负责|参与|亲自完成|承担).{0,24}(?:什么|哪些|哪一部分)/.test(questionText) ||
-            /(?:困难|挑战|最棘手|结果|成果|反馈|收获)/.test(questionText)
-        case 'research_deep_dive_process':
-        case 'internship_deep_dive_process':
-          return !/(?:困难|挑战|难点|问题|判断|取舍|棘手|阻力|卡住|怎么|如何|处理|应对|调整|解决)/.test(questionText) ||
-            /(?:最终结果|最后结果|成果|反馈|收获)/.test(questionText)
-        case 'research_deep_dive_outcome':
-        case 'internship_deep_dive_outcome': {
-          const outcomeFacets = [
-            /结果|成果|产出|发现|结论|落地|采纳/,
-            /反馈|评价|认可/,
-            /收获|反思|影响|改变|学到|意识到/,
-          ].filter(pattern => pattern.test(questionText)).length
-          return outcomeFacets !== 1
-        }
-        default:
-          return false
-      }
     }
     const mislabelsShortAnswerAsPaste = latestUserAnswer.length <= 12 &&
       /(?:重复粘贴|复制了一遍|上一条内容.{0,8}重复)/.test(draft)
@@ -1560,9 +1560,9 @@ export async function POST(req: Request) {
       ? !asksProjectQuestion(draft) || mixesCurrentAndNextExperience || prematurelyClosesWhileAsking ||
         mislabelsShortAnswerAsPaste || mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
-        violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
+        switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
-        !asksExpectedExperienceDimension(draft) || violatesExperienceSubstate(draft) ||
+        bundlesMultipleFormalExperiences(draft) || !asksExpectedExperienceDimension(draft) ||
         switchesAwayFromLockedExperience(draft))
     if (invalidDraft) {
       const requiredAction = `当前状态机维度是 ${authoritativeDimension}，当前唯一阶段是 ${turnObjective}。只允许提出一个属于该阶段的问题，并输出 [ASKING:${authoritativeDimension}]。不得跳过具体职责直接询问困难，也不得在过程阶段提前询问结果。科研未完成时禁止进入实习；实习未完成时禁止进入项目。预筛已经回答，禁止再次询问是否有科研或实习。`
@@ -1583,9 +1583,9 @@ export async function POST(req: Request) {
       ? !asksProjectQuestion(draft) || retryMixesExperiences ||
         mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
-        violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
+        switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
-        !asksExpectedExperienceDimension(draft) || violatesExperienceSubstate(draft) ||
+        bundlesMultipleFormalExperiences(draft) || !asksExpectedExperienceDimension(draft) ||
         switchesAwayFromLockedExperience(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
@@ -1596,6 +1596,8 @@ export async function POST(req: Request) {
         !/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(introducedExperienceName) &&
         !/^(?:这|该|那)(?:篇|个|项|段).{0,30}(?:是|由|属于|完成|负责|获得|得到)/.test(introducedExperienceName) &&
         !/^(?:最|主要)?(?:棘手|困难|难点|问题|挑战|结果|收获|解决)/.test(introducedExperienceName)
+      const researchProgress = getStructuredExperienceProgress('research')
+      const internshipProgress = getStructuredExperienceProgress('internship')
       if (authoritativeDimension === 'research') {
         draft = turnObjective === 'research_experience_contribution'
           ? `${turnSubject ? `围绕“${turnSubject}”的这段科研里` : '在这段科研中'}，你具体负责或亲自完成了哪些工作？\n\n[ASKING:research]`
@@ -1603,7 +1605,9 @@ export async function POST(req: Request) {
             ? '结合你刚才说的具体工作，其中哪个研究难点或关键判断最值得展开，你当时是怎么处理的？\n\n[ASKING:research]'
             : turnObjective === 'research_deep_dive_outcome'
               ? '这段科研最后形成了什么具体成果？\n\n[ASKING:research]'
-              : '先从你提到的科研经历说起：这项研究主要围绕什么问题或课题展开？\n\n[ASKING:research]'
+              : researchProgress.completedCount > 0
+                ? '上一段科研先聊到这里。请用一句话介绍下一段研究主要围绕什么问题展开？\n\n[ASKING:research]'
+                : '学术背景先聊到这里。你先从第一段科研说起，这项研究主要围绕什么问题展开？\n\n[ASKING:research]'
       } else if (authoritativeDimension === 'internship') {
         draft = turnObjective === 'internship_experience_contribution'
           ? `${turnSubject ? `你在${turnSubject}时` : '在这段实习中'}，日常主要负责哪些具体工作？\n\n[ASKING:internship]`
@@ -1611,7 +1615,9 @@ export async function POST(req: Request) {
             ? '结合你刚才说的具体工作，其中哪件事最需要你判断或处理，你当时是怎么做的？\n\n[ASKING:internship]'
             : turnObjective === 'internship_deep_dive_outcome'
               ? '这项工作最后带来了什么具体结果？\n\n[ASKING:internship]'
-              : '科研经历聊完后，我们按顺序进入实习：你当时在哪个单位或机构、担任什么岗位？\n\n[ASKING:internship]'
+              : internshipProgress.completedCount > 0
+                ? '上一段实习先聊到这里。下一段实习发生在哪个单位或机构，你当时做什么岗位？\n\n[ASKING:internship]'
+                : '接下来聊聊实习。你先从第一段说起，当时在哪个单位或机构、做什么岗位？\n\n[ASKING:internship]'
       } else {
         draft = turnObjective === 'project_deep_dive_process' && turnSubject
           ? `继续说“${turnSubject}”：其中哪次关键判断或处理最值得展开，你当时具体是怎么做的？\n\n[ASKING:project]`
@@ -1626,7 +1632,7 @@ export async function POST(req: Request) {
             : onlyConfirmedProjectAvailability
               ? '好呀，那我们就从这段竞赛聊起。它具体是什么比赛，当时需要完成什么任务？你先简单介绍一下背景就好。\n\n[ASKING:project]'
               : shouldAskSupplementalProjectInventory
-                ? '目前有效经历还不到三段，我只再确认这一次：除了已经聊过的内容，你还有一段课程项目、竞赛、实践或学生组织经历可以补充吗？没有也完全没关系。\n\n[ASKING:project]'
+                ? `${fallbackProjectInventoryQuestion}\n\n[ASKING:project]`
                 : `${projectInventoryQuestion}\n\n[ASKING:project]`
       }
     }
@@ -1755,12 +1761,14 @@ export async function POST(req: Request) {
   )
   response.headers.set('X-Interview-Empty', effectiveEmptyDimensions.join(','))
   response.headers.set('X-Interview-Experience-Count', String(concreteExperienceCount))
+  response.headers.set('X-Interview-Experience-Target', String(targetExperienceCount))
   response.headers.set('X-Interview-Plan', encodeURIComponent(JSON.stringify({
     dimension: responseDimension,
     objective: responseObjective,
     subject: responseExperienceSubject,
     subjectId: turnSubjectId,
     effectiveExperienceCount: concreteExperienceCount,
+    targetExperienceCount,
   })))
   response.headers.set(
     'X-Interview-Needs-More-Experiences',
