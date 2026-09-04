@@ -278,6 +278,68 @@ export async function POST(req: Request) {
     }
     return undefined
   }
+  type StructuredExperienceStage = 'identity' | 'contribution' | 'process' | 'outcome'
+  type StructuredExperienceArc = {
+    index: number
+    label: string
+    resolved: Record<StructuredExperienceStage, boolean>
+    answered: Record<StructuredExperienceStage, boolean>
+    skipped: Record<StructuredExperienceStage, boolean>
+    closed: boolean
+    materialComplete: boolean
+  }
+  const getStructuredExperienceProgress = (dimension: 'research' | 'internship') => {
+    const objectiveToStage: Record<string, StructuredExperienceStage> = {
+      [`${dimension}_open_experience`]: 'identity',
+      [`${dimension}_experience_contribution`]: 'contribution',
+      [`${dimension}_deep_dive_process`]: 'process',
+      [`${dimension}_deep_dive_outcome`]: 'outcome',
+    }
+    const blankArc = (index: number): StructuredExperienceArc => ({
+      index,
+      label: '',
+      resolved: { identity: false, contribution: false, process: false, outcome: false },
+      answered: { identity: false, contribution: false, process: false, outcome: false },
+      skipped: { identity: false, contribution: false, process: false, outcome: false },
+      closed: false,
+      materialComplete: false,
+    })
+    const arcs: StructuredExperienceArc[] = []
+    let current: StructuredExperienceArc | undefined
+    messages.forEach((message, messageIndex) => {
+      if (message.role !== 'assistant' || message.questionDimension !== dimension) return
+      const stage = objectiveToStage[message.questionObjective || '']
+      if (!stage) return
+      if (!current || (stage === 'identity' && current.closed)) {
+        current = blankArc(arcs.length + 1)
+        arcs.push(current)
+      }
+      const answer = getDirectAnswer(messageIndex)
+      const wasSkipped = skippedQuestionIdSet.has(message.id || '')
+      if (answer?.content.trim()) {
+        current.answered[stage] = true
+        if (stage === 'identity') {
+          current.label = answer.content
+            .split(/[。；;！!\n]/)[0]
+            .replace(/^[我]?在/u, '')
+            .trim()
+            .slice(0, 48)
+        }
+      }
+      if (wasSkipped) current.skipped[stage] = true
+      current.resolved[stage] = current.answered[stage] || current.skipped[stage]
+      const skippedStageCount = Object.values(current.skipped).filter(Boolean).length
+      current.closed = skippedStageCount >= 2 || Object.values(current.resolved).every(Boolean)
+      current.materialComplete = current.answered.identity && current.answered.contribution &&
+        (current.answered.process || current.answered.outcome)
+    })
+    return {
+      arcs,
+      completedCount: arcs.filter(arc => arc.closed).length,
+      materialCompleteCount: arcs.filter(arc => arc.materialComplete).length,
+      currentArc: [...arcs].reverse().find(arc => !arc.closed),
+    }
+  }
   const getProjectQueueProgress = (item: ProjectQueueItem) => {
     const answeredObjectives = new Set<string>()
     const skippedObjectives = new Set<string>()
@@ -399,7 +461,8 @@ export async function POST(req: Request) {
     const source = messageSource(message)
     const belongsToInternship = message.questionDimension === 'internship' ||
       /\[ASKING[：:]\s*internship\]/i.test(source)
-    const opensInternship = /(?:第[一二两三四]|下一段|另一段|那段).{0,16}实习|实习.{0,24}(?:哪家公司|什么岗位|哪个单位|主要负责)/.test(source)
+    const opensInternship = message.questionObjective === 'internship_open_experience' ||
+      /(?:第[一二两三四]|下一段|另一段|那段).{0,16}实习|实习.{0,24}(?:哪家公司|什么岗位|哪个单位|主要负责)/.test(source)
     if (!belongsToInternship || !opensInternship) return []
     const taggedName = source.match(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/i)?.[1]
     if (taggedName) return [normalizeName(taggedName)]
@@ -411,6 +474,7 @@ export async function POST(req: Request) {
   // pre-screen answer (for example “有一段实习，没有科研”). This state must not
   // depend on whether the model remembered to emit [EMPTY:].
   const effectiveEmptyDimensions = emptyDimensions.filter(dimension => ALL_DIMENSIONS.includes(dimension))
+  let announcedResearchCount = 0
   let announcedInternshipCount = 0
   if (!cvText.trim()) {
     const availability = extractPreScreenAvailability(messages)
@@ -432,10 +496,20 @@ export async function POST(req: Request) {
     const preScreenAnswer = preScreenQuestionIndex >= 0
       ? messages.slice(preScreenQuestionIndex + 1).find(message => message.role === 'user')?.content || ''
       : ''
-    const countToken = preScreenAnswer.match(/([一二两三四1-4])\s*段[^，,。；;]{0,12}实习/)?.[1]
     const countMap: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4 }
-    announcedInternshipCount = countToken ? (countMap[countToken] ?? Number(countToken)) : 0
-    if (announcedInternshipCount > 0 && observedInternshipNames.length < announcedInternshipCount) {
+    const announcedCount = (dimension: 'research' | 'internship') => {
+      const carrier = dimension === 'research' ? '(?:科研|研究)' : '实习'
+      const countToken = preScreenAnswer.match(
+        new RegExp(`([一二两三四1-4])\\s*段(?:(?![一二两三四1-4]\\s*段)[^，,。；;]){0,12}${carrier}`),
+      )?.[1]
+      if (countToken) return countMap[countToken] ?? Number(countToken)
+      return availability[dimension] === 'yes' ? 1 : 0
+    }
+    announcedResearchCount = announcedCount('research')
+    announcedInternshipCount = announcedCount('internship')
+    const structuredInternships = getStructuredExperienceProgress('internship')
+    const openedInternshipCount = Math.max(observedInternshipNames.length, structuredInternships.arcs.length)
+    if (announcedInternshipCount > 0 && openedInternshipCount < announcedInternshipCount) {
       effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'internship')
     }
   }
@@ -639,14 +713,16 @@ export async function POST(req: Request) {
   // tag is accepted only with verified evidence, while sufficiently complete
   // evidence can also close the experience when the model forgets that tag.
   if (!cvText.trim()) {
-    for (const dimension of ['research', 'internship']) {
+    for (const dimension of ['research', 'internship'] as const) {
       const completedInDimension = Array.from(new Set(verifiedCompletedExperienceNames
         .map(normalizeName)
         .filter(name => experienceDimensionByName.get(name) === dimension)))
+      const structuredProgress = getStructuredExperienceProgress(dimension)
       const requiredCount = dimension === 'internship'
         ? Math.max(announcedInternshipCount, 1)
-        : 1
-      const everyExperienceCompleted = completedInDimension.length >= requiredCount
+        : Math.max(announcedResearchCount, 1)
+      const completedCount = Math.max(completedInDimension.length, structuredProgress.completedCount)
+      const everyExperienceCompleted = completedCount >= requiredCount
 
       if (!everyExperienceCompleted) {
         effectiveCoveredDimensions = effectiveCoveredDimensions.filter(value => value !== dimension)
@@ -654,7 +730,9 @@ export async function POST(req: Request) {
         effectiveCoveredDimensions.push(dimension)
       }
     }
-    if (announcedInternshipCount > 0 && observedInternshipNames.length < announcedInternshipCount) {
+    const structuredInternships = getStructuredExperienceProgress('internship')
+    const openedInternshipCount = Math.max(observedInternshipNames.length, structuredInternships.arcs.length)
+    if (announcedInternshipCount > 0 && openedInternshipCount < announcedInternshipCount) {
       effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'internship')
     }
   }
@@ -864,19 +942,43 @@ export async function POST(req: Request) {
       ? '继续学术背景。自然回应用户主动提到的感兴趣或印象深刻的课程，追问这些课程带来的核心知识、分析方法、思维方式或实际能力；一次只问一个核心问题，不强迫用户选定唯一一门课程。末尾输出 [ASKING:academic]。'
       : '继续学术背景。自然回应用户列出的核心课程，开放地询问其中有没有感兴趣、投入较多、收获较大或印象深刻的课程；允许用户说一门、多门或没有，不要求选出唯一代表课程，暂时不要问课程项目。末尾输出 [ASKING:academic]。'
   } else if (!cvText.trim() && missing[0] === 'research') {
-    const researchStarted = messages.some(message =>
-      message.role === 'assistant' && message.questionDimension === 'research')
-    turnObjective = researchStarted ? 'research_follow_up' : 'research_open_experience'
-    turnDirective = researchStarted
-      ? '继续当前科研经历，只补一个最重要的研究缺口，例如个人贡献、研究方法、关键判断或结果反馈。用户在预筛中已经确认有科研，不得再次询问有没有科研，也不得切换到实习、项目或后续维度。末尾输出 [ASKING:research]。'
-      : '学术背景结束后按右栏顺序进入科研经历。用户在预筛中已经确认有一段科研，本轮直接请其介绍这段科研的研究主题或具体课题，不得再次询问有没有科研，不得同时询问实习。末尾输出 [ASKING:research]。'
+    const progress = getStructuredExperienceProgress('research')
+    const arc = progress.currentArc
+    const arcIndex = arc?.index ?? progress.arcs.length + 1
+    turnSubject = arc?.label || ''
+    turnSubjectId = `research:prescreen:${arcIndex}`
+    if (!arc || !arc.resolved.identity) {
+      turnObjective = 'research_open_experience'
+      turnDirective = `${progress.completedCount > 0 ? `前 ${progress.completedCount} 段科研已经完成，继续预筛中提到的下一段。` : '学术背景已经完成，现在按右栏顺序进入科研经历。'}本轮只询问这段科研主要研究什么问题、课题或方向；不要同时询问个人职责、研究方法、困难或结果，不得再次确认有没有科研，也不得切换到实习。用户回答前不要输出 [EXP:]。末尾输出 [ASKING:research]。`
+    } else if (!arc.resolved.contribution) {
+      turnObjective = 'research_experience_contribution'
+      turnDirective = `继续当前科研“${turnSubject || `第 ${arcIndex} 段科研`}”。研究主题已经得到回答，本轮只询问申请者在其中具体负责、参与或亲自完成了什么；不得直接跳到困难、判断、方法细节或结果。首次获得经历名称后，用准确简短名称输出 [EXP:经历简称]。末尾输出 [ASKING:research]。`
+    } else if (!arc.resolved.process) {
+      turnObjective = 'research_deep_dive_process'
+      turnDirective = `继续当前科研“${turnSubject || `第 ${arcIndex} 段科研`}”。研究主题和个人贡献已经清楚，本轮只询问一个真实遇到的研究难点、关键判断或方法取舍，以及当时如何处理；不得虚构具体困难，不得询问结果或切换经历。末尾输出 [ASKING:research]。`
+    } else {
+      turnObjective = 'research_deep_dive_outcome'
+      turnDirective = `继续当前科研“${turnSubject || `第 ${arcIndex} 段科研`}”。主题、个人贡献和处理过程已经清楚，本轮只询问最终产出、研究发现、导师反馈或个人反思中最适合的一项；不得回头重问职责或困难，不得切换到实习。末尾输出 [ASKING:research]。`
+    }
   } else if (!cvText.trim() && missing[0] === 'internship') {
-    const internshipStarted = messages.some(message =>
-      message.role === 'assistant' && message.questionDimension === 'internship')
-    turnObjective = internshipStarted ? 'internship_follow_up' : 'internship_open_experience'
-    turnDirective = internshipStarted
-      ? '继续当前实习经历，只补一个最重要的工作缺口，例如个人职责、实际难题、处理方式或结果反馈。用户在预筛中已经确认有实习，不得再次询问有没有实习，也不得回到科研或切换到项目。末尾输出 [ASKING:internship]。'
-      : '科研维度完成后按右栏顺序进入实习经历。用户在预筛中已经确认有一段实习，本轮直接询问实习单位或岗位中的一个基础信息，不得再次询问有没有实习，不得回到科研。末尾输出 [ASKING:internship]。'
+    const progress = getStructuredExperienceProgress('internship')
+    const arc = progress.currentArc
+    const arcIndex = arc?.index ?? progress.arcs.length + 1
+    turnSubject = arc?.label || ''
+    turnSubjectId = `internship:prescreen:${arcIndex}`
+    if (!arc || !arc.resolved.identity) {
+      turnObjective = 'internship_open_experience'
+      turnDirective = `${progress.completedCount > 0 ? `前 ${progress.completedCount} 段实习已经完成，继续预筛中提到的下一段。` : '科研维度已经完成，现在按右栏顺序进入实习经历。'}本轮只询问这段实习所在的单位/机构和岗位或工作方向，让用户用一句话说明即可；不要同时询问具体职责、困难、处理方法或结果，不得再次确认有没有实习。用户回答前不要输出 [EXP:]。末尾输出 [ASKING:internship]。`
+    } else if (!arc.resolved.contribution) {
+      turnObjective = 'internship_experience_contribution'
+      turnDirective = `继续当前实习“${turnSubject || `第 ${arcIndex} 段实习`}”。单位和岗位方向已经得到回答，本轮只询问申请者日常具体负责或亲自完成的主要工作；不得直接跳到困难、关键判断或结果。首次获得经历名称后，用准确简短名称输出 [EXP:经历简称]。末尾输出 [ASKING:internship]。`
+    } else if (!arc.resolved.process) {
+      turnObjective = 'internship_deep_dive_process'
+      turnDirective = `继续当前实习“${turnSubject || `第 ${arcIndex} 段实习`}”。单位、岗位和具体职责已经清楚，本轮只询问一件实际遇到的难题、关键判断或重要取舍，以及当时如何处理；不得虚构业务问题，不得询问结果或切换经历。末尾输出 [ASKING:internship]。`
+    } else {
+      turnObjective = 'internship_deep_dive_outcome'
+      turnDirective = `继续当前实习“${turnSubject || `第 ${arcIndex} 段实习`}”。单位岗位、职责和处理过程已经清楚，本轮只询问最终产出、业务结果、他人反馈或个人反思中最适合的一项；不得回头重问职责或困难，不得切换到项目。末尾输出 [ASKING:internship]。`
+    }
   } else if (!cvText.trim() && onlyConfirmedProjectAvailability &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnObjective = 'project_identify_experience'
@@ -1253,6 +1355,37 @@ export async function POST(req: Request) {
       }
       return true
     }
+    const violatesExperienceSubstate = (text: string) => {
+      if (!['research', 'internship'].includes(authoritativeDimension)) return false
+      const questionText = text.match(/[^。！？!?\n]*[？?]/g)?.at(-1) || text
+      switch (turnObjective) {
+        case 'research_open_experience':
+          return !/(?:研究|科研|课题|方向|主题|问题|实验室|课题组).{0,40}(?:什么|哪|介绍|围绕)|(?:什么|哪).{0,30}(?:研究|科研|课题|方向|主题|问题|实验室|课题组)/.test(questionText) ||
+            /(?:负责|贡献|困难|挑战|结果|成果|反馈)/.test(questionText)
+        case 'internship_open_experience':
+          return !/(?:实习|单位|公司|机构|岗位|部门|工作方向).{0,40}(?:哪里|哪家|什么|介绍)|(?:哪里|哪家|什么).{0,30}(?:实习|单位|公司|机构|岗位|部门|工作方向)/.test(questionText) ||
+            /(?:具体负责|主要工作|困难|挑战|结果|成果|反馈)/.test(questionText)
+        case 'research_experience_contribution':
+        case 'internship_experience_contribution':
+          return !/(?:具体|日常|主要).{0,20}(?:负责|参与|完成|工作|任务)|(?:负责|参与|亲自完成|承担).{0,24}(?:什么|哪些|哪一部分)/.test(questionText) ||
+            /(?:困难|挑战|最棘手|结果|成果|反馈|收获)/.test(questionText)
+        case 'research_deep_dive_process':
+        case 'internship_deep_dive_process':
+          return !/(?:困难|挑战|难点|问题|判断|取舍|棘手|阻力|卡住|怎么|如何|处理|应对|调整|解决)/.test(questionText) ||
+            /(?:最终结果|最后结果|成果|反馈|收获)/.test(questionText)
+        case 'research_deep_dive_outcome':
+        case 'internship_deep_dive_outcome': {
+          const outcomeFacets = [
+            /结果|成果|产出|发现|结论|落地|采纳/,
+            /反馈|评价|认可/,
+            /收获|反思|影响|改变|学到|意识到/,
+          ].filter(pattern => pattern.test(questionText)).length
+          return outcomeFacets !== 1
+        }
+        default:
+          return false
+      }
+    }
     const mislabelsShortAnswerAsPaste = latestUserAnswer.length <= 12 &&
       /(?:重复粘贴|复制了一遍|上一条内容.{0,8}重复)/.test(draft)
     const mischaracterizesRephrase = (text: string) => controlAction === 'rephrase' &&
@@ -1272,10 +1405,14 @@ export async function POST(req: Request) {
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
-        !asksExpectedExperienceDimension(draft) || switchesAwayFromLockedExperience(draft))
+        !asksExpectedExperienceDimension(draft) || violatesExperienceSubstate(draft) ||
+        switchesAwayFromLockedExperience(draft))
     if (invalidDraft) {
-      const requiredAction = `当前状态机维度是 ${authoritativeDimension}，只允许提出一个属于该维度的问题，并输出 [ASKING:${authoritativeDimension}]。科研未完成时禁止进入实习；实习未完成时禁止进入项目。预筛已经回答，禁止再次询问是否有科研或实习。`
-      const retryPrompt = `${systemPrompt}\n\n## 【上次生成未通过服务器校验】\n你刚才偏离了服务器指定的当前经历任务、擅自切换了项目，或在一个问题中捆绑了多个信息点；该结果已被拦截。${requiredAction}服务器指定的当前项目是“${turnSubject || '当前经历'}”，不得提问、预告或输出 [EXP:] 打开其他项目。项目首问只能从项目内容、个人分工中选择一项询问，不能同时问两项；尚未收到首问回答时禁止输出 [EXP_DONE:]。不得出现任何申请原因、毕业规划或个人特质问题。`
+      const requiredAction = `当前状态机维度是 ${authoritativeDimension}，当前唯一阶段是 ${turnObjective}。只允许提出一个属于该阶段的问题，并输出 [ASKING:${authoritativeDimension}]。不得跳过具体职责直接询问困难，也不得在过程阶段提前询问结果。科研未完成时禁止进入实习；实习未完成时禁止进入项目。预筛已经回答，禁止再次询问是否有科研或实习。`
+      const experienceConstraint = authoritativeDimension === 'project'
+        ? `服务器指定的当前项目是“${turnSubject || '当前经历'}”，不得提问、预告或输出 [EXP:] 打开其他项目。项目首问只能从项目内容、个人分工中选择一项询问，不能同时问两项；尚未收到首问回答时禁止输出 [EXP_DONE:]。`
+        : `服务器指定的当前经历是“${turnSubject || '当前经历'}”。必须严格执行 ${turnObjective} 阶段，不得输出 [EXP:] 打开另一段经历；尚未完成结果阶段时禁止输出 [EXP_DONE:]。`
+      const retryPrompt = `${systemPrompt}\n\n## 【上次生成未通过服务器校验】\n你刚才偏离了服务器指定的当前经历任务、擅自切换了经历，或在一个问题中捆绑了多个信息点；该结果已被拦截。${requiredAction}${experienceConstraint}不得出现任何申请原因、毕业规划或个人特质问题。`
       const retryResponse = await streamDeepSeek(
         retryPrompt,
         modelConversation,
@@ -1291,7 +1428,8 @@ export async function POST(req: Request) {
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
       : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
-        !asksExpectedExperienceDimension(draft) || switchesAwayFromLockedExperience(draft))
+        !asksExpectedExperienceDimension(draft) || violatesExperienceSubstate(draft) ||
+        switchesAwayFromLockedExperience(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
       const introducedExperienceName = latestUserAnswer
@@ -1302,17 +1440,21 @@ export async function POST(req: Request) {
         !/^(?:这|该|那)(?:篇|个|项|段).{0,30}(?:是|由|属于|完成|负责|获得|得到)/.test(introducedExperienceName) &&
         !/^(?:最|主要)?(?:棘手|困难|难点|问题|挑战|结果|收获|解决)/.test(introducedExperienceName)
       if (authoritativeDimension === 'research') {
-        const researchStarted = messages.some(message =>
-          message.role === 'assistant' && message.questionDimension === 'research')
-        draft = researchStarted
-          ? '继续聊这段科研：其中哪项工作最需要你亲自判断或解决？\n\n[ASKING:research]'
-          : '先从你提到的科研经历说起：这项研究主要围绕什么问题或课题展开？\n\n[ASKING:research]'
+        draft = turnObjective === 'research_experience_contribution'
+          ? `${turnSubject ? `围绕“${turnSubject}”的这段科研里` : '在这段科研中'}，你具体负责或亲自完成了哪些工作？\n\n[ASKING:research]`
+          : turnObjective === 'research_deep_dive_process'
+            ? '结合你刚才说的具体工作，其中哪个研究难点或关键判断最值得展开，你当时是怎么处理的？\n\n[ASKING:research]'
+            : turnObjective === 'research_deep_dive_outcome'
+              ? '这段科研最后形成了什么具体成果？\n\n[ASKING:research]'
+              : '先从你提到的科研经历说起：这项研究主要围绕什么问题或课题展开？\n\n[ASKING:research]'
       } else if (authoritativeDimension === 'internship') {
-        const internshipStarted = messages.some(message =>
-          message.role === 'assistant' && message.questionDimension === 'internship')
-        draft = internshipStarted
-          ? '继续聊这段实习：其中哪项工作最需要你亲自判断或处理？\n\n[ASKING:internship]'
-          : '科研经历聊完后，我们按顺序进入实习：你当时在哪个单位或机构、担任什么岗位？\n\n[ASKING:internship]'
+        draft = turnObjective === 'internship_experience_contribution'
+          ? `${turnSubject ? `你在${turnSubject}时` : '在这段实习中'}，日常主要负责哪些具体工作？\n\n[ASKING:internship]`
+          : turnObjective === 'internship_deep_dive_process'
+            ? '结合你刚才说的具体工作，其中哪件事最需要你判断或处理，你当时是怎么做的？\n\n[ASKING:internship]'
+            : turnObjective === 'internship_deep_dive_outcome'
+              ? '这项工作最后带来了什么具体结果？\n\n[ASKING:internship]'
+              : '科研经历聊完后，我们按顺序进入实习：你当时在哪个单位或机构、担任什么岗位？\n\n[ASKING:internship]'
       } else {
         draft = turnObjective === 'project_deep_dive_process' && turnSubject
           ? `继续说“${turnSubject}”：其中哪次关键判断或处理最值得展开，你当时具体是怎么做的？\n\n[ASKING:project]`
@@ -1438,7 +1580,10 @@ export async function POST(req: Request) {
     !verifiedCompletedExperienceNames.some(completed => isLikelyExperienceAlias(activeExperience, completed))
       ? activeExperience
       : ''
-  const responseExperienceSubject = turnSubject || unresolvedActiveExperience
+  const isUnidentifiedExperienceOpening =
+    ['research_open_experience', 'internship_open_experience'].includes(turnObjective) && !turnSubject
+  const responseExperienceSubject = turnSubject ||
+    (isUnidentifiedExperienceOpening ? '' : unresolvedActiveExperience)
   if (responseExperienceSubject) {
     // turnSubject is the item selected by the server for this response. The
     // client may still send the just-completed previous item as activeExperience.
