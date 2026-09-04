@@ -1017,17 +1017,21 @@ export async function POST(req: Request) {
           ? `你刚提到的“${introducedExperienceName}”很值得展开。先从一个具体场景聊起：这段经历里，哪件事最需要你亲自判断或解决？\n\n[ASKING:${authoritativeDimension}]`
           : `刚才这段经历里，有没有一件最需要你亲自判断或解决的事？我们先聊这个具体场景。\n\n[ASKING:${authoritativeDimension}]`
       } else {
-        draft = turnObjective === 'project_open_experience' && turnSubject
-          ? `我们先从“${turnSubject}”说起。你在这段经历中主要负责哪一部分？\n\n[ASKING:project]`
+        draft = turnObjective === 'project_deep_dive_process' && turnSubject
+          ? `继续说“${turnSubject}”：其中哪次关键判断或处理最值得展开，你当时具体是怎么做的？\n\n[ASKING:project]`
+          : turnObjective === 'project_deep_dive_outcome' && turnSubject
+            ? `“${turnSubject}”最后形成了什么结果，或者得到了什么具体反馈？\n\n[ASKING:project]`
+          : turnObjective === 'project_open_experience' && turnSubject
+            ? `我们先从“${turnSubject}”说起。你在这段经历中主要负责哪一部分？\n\n[ASKING:project]`
+          : turnObjective === 'project_identify_experience'
+            ? `你提到有相关经历，具体是哪一项比赛、项目或实践？先说名称和大致内容就好。\n\n[ASKING:project]`
           : latestAnswerIntroducesExperience
-          ? `你刚提到的“${introducedExperienceName}”很值得继续聊。我们先聚焦这一次经历：当时最棘手的问题是什么？\n\n[ASKING:project]`
-          : onlyConfirmedProjectAvailability
-          ? '好呀，那我们就从这段竞赛聊起。它具体是什么比赛，当时需要完成什么任务？你先简单介绍一下背景就好。\n\n[ASKING:project]'
-          : shouldAskSupplementalProjectInventory
-            ? '目前有效经历还不到三段，我只再确认这一次：除了已经聊过的内容，你还有一段课程项目、竞赛、实践或学生组织经历可以补充吗？没有也完全没关系。\n\n[ASKING:project]'
-          : !extracurricularStageAnswered
-            ? `${projectInventoryQuestion}\n\n[ASKING:project]`
-          : `${projectInventoryQuestion}\n\n[ASKING:project]`
+            ? `你刚提到的“${introducedExperienceName}”很值得继续聊。我们先聚焦这一次经历：当时最棘手的问题是什么？\n\n[ASKING:project]`
+            : onlyConfirmedProjectAvailability
+              ? '好呀，那我们就从这段竞赛聊起。它具体是什么比赛，当时需要完成什么任务？你先简单介绍一下背景就好。\n\n[ASKING:project]'
+              : shouldAskSupplementalProjectInventory
+                ? '目前有效经历还不到三段，我只再确认这一次：除了已经聊过的内容，你还有一段课程项目、竞赛、实践或学生组织经历可以补充吗？没有也完全没关系。\n\n[ASKING:project]'
+                : `${projectInventoryQuestion}\n\n[ASKING:project]`
       }
     }
     const validatedDimension = classifyInterviewQuestion(draft) ||
@@ -1121,8 +1125,10 @@ export async function POST(req: Request) {
     response.headers.set('X-Interview-Dimension', responseDimension)
   }
   if (responseObjective) response.headers.set('X-Interview-Objective', responseObjective)
-  if (activeExperience || turnSubject) {
-    response.headers.set('X-Interview-Subject', encodeURIComponent(activeExperience || turnSubject))
+  if (turnSubject || activeExperience) {
+    // turnSubject is the item selected by the server for this response. The
+    // client may still send the just-completed previous item as activeExperience.
+    response.headers.set('X-Interview-Subject', encodeURIComponent(turnSubject || activeExperience))
   }
   response.headers.set(
     'X-Interview-Covered',
@@ -1133,7 +1139,7 @@ export async function POST(req: Request) {
   response.headers.set('X-Interview-Plan', encodeURIComponent(JSON.stringify({
     dimension: responseDimension,
     objective: responseObjective,
-    subject: activeExperience || turnSubject || '',
+    subject: turnSubject || activeExperience || '',
     effectiveExperienceCount: concreteExperienceCount,
   })))
   response.headers.set(
