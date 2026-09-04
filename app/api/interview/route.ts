@@ -45,7 +45,7 @@ export async function POST(req: Request) {
     const right = normalizeName(rightRaw)
     if (!left || !right) return false
     if (left.includes(right) || right.includes(left)) return true
-    const carrier = /(模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|竞赛|比赛|大赛|实习|科研|课题)/g
+    const carrier = /(模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|实习|科研|课题)/g
     const leftCarrier = left.match(carrier)?.join('') || ''
     const rightCarrier = right.match(carrier)?.join('') || ''
     if (!leftCarrier || leftCarrier !== rightCarrier) return false
@@ -98,7 +98,7 @@ export async function POST(req: Request) {
       // Generic academic questions about a "small project or experiment" are
       // course-depth evidence and cannot silently become a counted project.
       const explicitlyOpensIndependentProject =
-        /(?:课程(?:中|里|之外|以外)|课外|课堂之外).{0,40}(?:大作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|竞赛|比赛|大赛|个人项目|社会实践|公益|志愿|社团|学生组织)|(?:有没有|参加过|做过|投入过|接下来聊).{0,30}(?:大作业|课程设计|课程论文|毕业设计|竞赛|比赛|大赛|个人项目|社会实践|公益|志愿|社团|学生组织)/.test(source)
+        /(?:课程(?:中|里|之外|以外)|课外|课堂之外).{0,40}(?:大作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|个人项目|社会实践|公益|志愿|社团|学生组织)|(?:有没有|参加过|做过|投入过|接下来聊|接着看).{0,30}(?:大作业|课程设计|课程论文|毕业设计|竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|个人项目|社会实践|公益|志愿|社团|学生组织)/.test(source)
       if (metadataDimension === 'project' && explicitlyOpensIndependentProject) {
         qualifiedProjectExperienceNames.add(normalizedName)
       }
@@ -123,7 +123,7 @@ export async function POST(req: Request) {
     const identity = answer.split(/[。；;！!\n]/)[0].trim().slice(0, 40)
     return identity.length >= 2 ? [identity] : []
   })
-  const PROJECT_NAME_CARRIER = /(?:模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|大作业|竞赛|比赛|大赛|个人项目|开源项目|社会实践|志愿|公益|社团|学生组织)/
+  const PROJECT_NAME_CARRIER = /(?:模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|大作业|竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|个人项目|开源项目|社会实践|志愿|公益|社团|学生组织)/
   const parseProjectInventoryLine = (rawLine: string) => {
     const cleaned = rawLine
       .replace(/^\s*(?:\d+[.、)]|[一二三四五六]+[、.)]|[-•·])\s*/, '')
@@ -141,7 +141,8 @@ export async function POST(req: Request) {
     const namedFragments = fragments.filter(fragment => PROJECT_NAME_CARRIER.test(fragment))
     const candidates = namedFragments.length >= 2 ? namedFragments : [cleaned]
 
-    return candidates.flatMap(candidate => {
+    return candidates.flatMap(rawCandidate => {
+      const candidate = rawCandidate.replace(/^(?:一|二|两|三|四)?段\s*/, '').trim()
       if (!PROJECT_NAME_CARRIER.test(candidate)) return []
       const identity = candidate.split(/[：:。；;！!]/)[0]
         .replace(/[\*#「」『』《》]/g, '').trim().slice(0, 40)
@@ -155,7 +156,7 @@ export async function POST(req: Request) {
     const source = messageSource(message)
     const belongsToProject = message.questionDimension === 'project' ||
       /\[ASKING[：:]\s*project\]/i.test(source)
-    const opensConcreteProject = /有没有.{0,20}(?:大作业|课程设计|课程论文|毕业设计|竞赛|比赛|大赛|个人项目|社团|志愿)|哪(?:一|个|项).{0,16}(?:项目|设计|作业|活动)|(?:参加过|做过).{0,12}(?:什么|哪些).{0,12}(?:竞赛|比赛|大赛|项目|实践|活动)|(?:什么|哪些).{0,12}(?:竞赛|比赛|大赛|个人项目|实践)|(?:是什么|具体是).{0,12}(?:比赛|竞赛|大赛|项目|实践|活动)/.test(source)
+    const opensConcreteProject = /有没有.{0,20}(?:大作业|课程设计|课程论文|毕业设计|竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|个人项目|社团|志愿)|哪(?:一|个|项).{0,16}(?:项目|设计|作业|活动)|(?:参加过|做过).{0,12}(?:什么|哪些).{0,12}(?:竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|项目|实践|活动)|(?:什么|哪些).{0,12}(?:竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|个人项目|实践)|(?:是什么|具体是).{0,12}(?:比赛|竞赛|大赛|商赛|建模赛|创业赛|创赛|项目|实践|活动)/.test(source)
     if (!belongsToProject || !opensConcreteProject) return []
     const answer = messages.slice(index + 1).find(candidate => candidate.role === 'user')?.content.trim() || ''
     if (!answer || /^(?:没有|没|无|都没有|想不到|暂时没有)/.test(answer)) return []
@@ -173,8 +174,22 @@ export async function POST(req: Request) {
     if (lines.filter(line => /^\s*(?:\d+[.、)]|[一二三四五六]+[、.)])/.test(line)).length < 2) return []
     return lines.flatMap(parseProjectInventoryLine)
   })
-  const allDiscoveredProjectNames = Array.from(new Set([...inferredProjectNames, ...directlyDeclaredProjectNames]))
-  const hasVerifiedExperienceCompletion = (experienceName: string) => {
+  // Once the advisor has visibly opened a project, its EXP/state identity is part
+  // of the authoritative queue even if the applicant originally used shorthand
+  // that the inventory parser did not recognize.
+  const stateOpenedProjectNames = [
+    ...taggedExperienceNames,
+    ...startedExperiences,
+    ...(activeExperience ? [activeExperience] : []),
+  ].filter(name =>
+    experienceDimensionByName.get(normalizeName(name)) === 'project' ||
+    PROJECT_NAME_CARRIER.test(name))
+  const allDiscoveredProjectNames = Array.from(new Set([
+    ...inferredProjectNames,
+    ...directlyDeclaredProjectNames,
+    ...stateOpenedProjectNames,
+  ]))
+  const getExperienceEvidence = (experienceName: string) => {
     const startIndex = messages.findIndex(message => {
       if (message.role !== 'assistant') return false
       const source = messageSource(message)
@@ -182,7 +197,7 @@ export async function POST(req: Request) {
       return (tagged && isLikelyExperienceAlias(tagged, experienceName)) ||
         Boolean(message.questionSubject && isLikelyExperienceAlias(message.questionSubject, experienceName))
     })
-    if (startIndex < 0) return false
+    if (startIndex < 0) return null
     const evidenceReplies: string[] = []
     for (let index = startIndex + 1; index < messages.length; index++) {
       const message = messages[index]
@@ -195,15 +210,29 @@ export async function POST(req: Request) {
     }
     const evidence = evidenceReplies.join('\n')
     const hasContribution = /我.{0,12}(?:负责|承担|主导|完成|搭建|建立|设计|实现|分析|清洗|建模|撰写|组织|协调|提出|选择|决定|处理)/.test(evidence)
-    const hasChallenge = /(?:遇到|面临|出现|发现).{0,24}(?:问题|困难|挑战|偏差|异常|不足|瓶颈|冲突|不一致|不合理)|(?:困难|挑战|难点|瓶颈|冲突|数据缺失|样本不平衡)/.test(evidence)
-    const hasSolution = /(?:为了解决|针对|于是|因此|随后|通过).{0,40}(?:调整|改进|筛选|比较|验证|重做|重新|处理|解决|采用|引入|建立|设计)/.test(evidence)
+    const hasChallenge = /(?:遇到|面临|出现|发现|存在).{0,24}(?:问题|困难|挑战|偏差|异常|不足|瓶颈|冲突|不一致|不合理)|(?:异常值|极端样本).{0,24}(?:直接删除|全部保留|损失|干扰|偏离)|(?:困难|挑战|难点|瓶颈|冲突|数据缺失|样本不平衡)/.test(evidence)
+    const hasSolution = /(?:为了解决|针对|于是|因此|随后|通过).{0,40}(?:调整|改进|筛选|比较|验证|重做|重新|处理|解决|采用|引入|建立|设计)|(?:没有一刀切|结合.{0,20}(?:含义|实际|业务).{0,20}(?:区分|判断|保留|剔除)|修正剔除|对比.{0,20}(?:模型|结果|输出|方案))/.test(evidence)
     // “结果解读” describes a responsibility, not an achieved outcome. Require
     // an explicit result predicate instead of accepting the bare word “结果”.
     const hasOutcome = /(?:最终|最后).{0,40}(?:完成|形成|实现|获得|提交|入选|获奖|提升|降低|改善)|结果(?:显示|表明|证明|为|是)|(?:成绩|获奖|评价|反馈|评委|老师).{0,20}(?:是|为|认为|肯定|认可)|(?:建议|方案|报告).{0,20}(?:采纳|落地|提交)/.test(evidence)
     const hasReflection = /(?:意识到|认识到|学到|明白|反思|后来发现|这让我).{0,50}/.test(evidence)
-    const developmentSignals = [hasChallenge, hasSolution, hasOutcome, hasReflection].filter(Boolean).length
-    return hasContribution && developmentSignals >= 1 &&
-      (evidenceReplies.length >= 2 || developmentSignals >= 2)
+    return {
+      replyCount: evidenceReplies.length,
+      hasContribution,
+      hasChallenge,
+      hasSolution,
+      hasOutcome,
+      hasReflection,
+    }
+  }
+  const hasVerifiedExperienceCompletion = (experienceName: string) => {
+    const evidence = getExperienceEvidence(experienceName)
+    if (!evidence) return false
+    // A role description plus one generic follow-up is not a deep dive. Require
+    // both process evidence and an outcome/reflection before the queue advances.
+    return evidence.hasContribution &&
+      (evidence.hasChallenge || evidence.hasSolution) &&
+      (evidence.hasOutcome || evidence.hasReflection)
   }
   // Hidden EXP_DONE tags improve the UI, but they are not the only completion
   // source. Once a started experience has enough verified dialogue evidence, the
@@ -638,7 +667,10 @@ export async function POST(req: Request) {
       .some(completed => isLikelyExperienceAlias(activeExperience, completed))
       ? activeExperience
       : ''
-  const pendingDiscoveredProject = activeProjectStillOpen || pendingProjectCandidates[0] ||
+  const latestOpenedProjectStillOpen = [...taggedExperienceNames].reverse().find(name =>
+    experienceDimensionByName.get(normalizeName(name)) === 'project' &&
+    !verifiedCompletedExperienceNames.some(completed => isLikelyExperienceAlias(name, completed))) || ''
+  const pendingDiscoveredProject = activeProjectStillOpen || latestOpenedProjectStillOpen || pendingProjectCandidates[0] ||
     allDiscoveredProjectNames.find(name => !completedExperienceSet.has(normalizeName(name))) || ''
   const startedExperienceSet = new Set(startedExperiences.map(normalizeName))
   const targetMajorForRanking = quickInfo?.targetMajor?.trim() || quickInfo?.major?.trim() || '目标专业'
@@ -696,12 +728,18 @@ export async function POST(req: Request) {
   } else if (!cvText.trim() && pendingDiscoveredProject &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnSubject = pendingDiscoveredProject
-    turnObjective = startedExperienceSet.has(normalizeName(pendingDiscoveredProject))
-      ? 'project_deep_dive'
-      : 'project_open_experience'
-    turnDirective = startedExperienceSet.has(normalizeName(pendingDiscoveredProject))
-      ? `继续深挖当前项目“${pendingDiscoveredProject}”。结合用户已经回答的内容，只选择角色、关键挑战、个人行动、结果或反思中最重要且尚未回答的一项自然追问；不得重复已经回答的信息，不得寻找另一段经历。末尾输出 [ASKING:project]。`
-      : `用户已经提供了项目候选“${pendingDiscoveredProject}”。本轮正式打开这一段，只询问申请者在其中主要负责或亲自完成了哪一部分；不要同时询问题目、团队分工、困难、解决方法、结果或收获。首次深挖需用该项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
+    const projectHasStarted = startedExperienceSet.has(normalizeName(pendingDiscoveredProject))
+    const projectEvidence = getExperienceEvidence(pendingDiscoveredProject)
+    if (!projectHasStarted || !projectEvidence?.hasContribution) {
+      turnObjective = 'project_open_experience'
+      turnDirective = `用户已经提供了项目候选“${pendingDiscoveredProject}”。本轮正式打开这一段，只询问申请者在其中主要负责或亲自完成了哪一部分；不要同时询问题目、团队分工、困难、解决方法、结果或收获。首次深挖需用该项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
+    } else if (!projectEvidence.hasChallenge && !projectEvidence.hasSolution) {
+      turnObjective = 'project_deep_dive_process'
+      turnDirective = `继续深挖当前项目“${pendingDiscoveredProject}”。用户已经说明了个人职责，本轮只开放询问实际遇到的一个困难、关键判断或重要取舍，以及当时如何处理；不得虚构缺失值、样本问题或其他具体困难作为提问前提，不得询问结果、收获或另一段经历。末尾输出 [ASKING:project]。`
+    } else {
+      turnObjective = 'project_deep_dive_outcome'
+      turnDirective = `继续深挖当前项目“${pendingDiscoveredProject}”。用户已经说明个人职责和处理过程，本轮只询问最终产出、可验证结果、外部反馈或个人反思中最适合该经历的一项；不得把尚未出现的成绩、奖项、落地效果写成事实，不得寻找另一段经历。末尾输出 [ASKING:project]。`
+    }
   } else if (!cvText.trim() && missing[0] === 'project' && shouldAskSupplementalProjectInventory) {
     turnObjective = 'project_supplemental_inventory'
     turnDirective = isLawApplicant

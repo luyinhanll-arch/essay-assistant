@@ -93,7 +93,7 @@ function escapeRegExp(value: string): string {
 function removeCourseOnlyProjectSections(summary: string, messages: Message[]): string {
   if (!summary.includes('# ')) return summary
   const sections = summary.split(/(?=^# )/m).filter(Boolean)
-  const explicitProjectCarrier = /大作业|课程作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|独立项目|小组项目|竞赛|比赛|大赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|公益|志愿|社团/
+  const explicitProjectCarrier = /大作业|课程作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|独立项目|小组项目|竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|公益|志愿|社团/
   const routineCourseLearning = /(?:这门|该门|一门|核心|专业)?课程|课上|课堂|实验课|课程实验|观摩|仪器练习|学会|掌握|知识点/
 
   const kept = sections.filter(section => {
@@ -121,7 +121,7 @@ function recoverProjectSummary(messages: Message[]): string {
   const start = messages.findIndex(message => message.role === 'assistant' &&
     (message.questionDimension === 'project' ||
       /\[ASKING[：:]\s*project\]/i.test(src(message)) ||
-      /(?:有没有|参加过|做过|聊聊|听听).{0,100}(?:竞赛|比赛|大赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业)/.test(src(message)) ||
+      /(?:有没有|参加过|做过|聊聊|听听|接着看).{0,100}(?:竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业)/.test(src(message)) ||
       classifyInterviewQuestion(src(message)) === 'project'))
   if (start < 0) return '无'
 
@@ -139,7 +139,7 @@ function recoverProjectSummary(messages: Message[]): string {
   const answers = window.filter(message => message.role === 'user')
     .map(message => message.content.trim()).filter(Boolean)
   const identityAnswer = answers.find(answer =>
-    /竞赛|比赛|大赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业/.test(answer)) || ''
+    /竞赛|比赛|大赛|商赛|建模赛|创业赛|创赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业/.test(answer)) || ''
   if (!identityAnswer || /^(?:没有|没|无|暂时没有)/.test(identityAnswer)) return '无'
   const title = identityAnswer.split(/[：:。；;！!\n]/)[0]
     .replace(/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?/, '')
