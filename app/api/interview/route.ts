@@ -280,24 +280,40 @@ export async function POST(req: Request) {
   }
   const getProjectQueueProgress = (item: ProjectQueueItem) => {
     const answeredObjectives = new Set<string>()
+    const skippedObjectives = new Set<string>()
     let hasIdBoundQuestion = false
     messages.forEach((message, index) => {
       if (message.role !== 'assistant' || message.questionSubjectId !== item.id) return
       hasIdBoundQuestion = true
       const answer = getDirectAnswer(index)
-      if (answer?.content.trim() || skippedQuestionIdSet.has(message.id || '')) {
-        answeredObjectives.add(message.questionObjective || '')
-      }
+      const objective = message.questionObjective || ''
+      if (answer?.content.trim()) answeredObjectives.add(objective)
+      if (skippedQuestionIdSet.has(message.id || '')) skippedObjectives.add(objective)
     })
-    const contributionAnswered = answeredObjectives.has('project_open_experience')
-    const processAnswered = answeredObjectives.has('project_deep_dive_process')
-    const outcomeAnswered = answeredObjectives.has('project_deep_dive_outcome')
+    const isResolved = (objective: string) =>
+      answeredObjectives.has(objective) || skippedObjectives.has(objective)
+    const contributionAnswered = isResolved('project_open_experience')
+    const processAnswered = isResolved('project_deep_dive_process')
+    const outcomeAnswered = isResolved('project_deep_dive_outcome')
+    const skippedStageCount = [
+      'project_open_experience',
+      'project_deep_dive_process',
+      'project_deep_dive_outcome',
+    ].filter(objective => skippedObjectives.has(objective)).length
     return {
       hasIdBoundQuestion,
       contributionAnswered,
       processAnswered,
       outcomeAnswered,
-      complete: contributionAnswered && processAnswered && outcomeAnswered,
+      // Two unavailable information points mean this story is no longer worth
+      // forcing. Close it even if the final stage was never asked.
+      closed: skippedStageCount >= 2 ||
+        (contributionAnswered && processAnswered && outcomeAnswered),
+      // Closing the queue item and counting it as useful material are separate.
+      // A skipped stage supplies no evidence.
+      materialComplete: answeredObjectives.has('project_open_experience') &&
+        (answeredObjectives.has('project_deep_dive_process') ||
+          answeredObjectives.has('project_deep_dive_outcome')),
     }
   }
   const getExperienceEvidence = (experienceName: string, experienceId = '') => {
@@ -345,7 +361,7 @@ export async function POST(req: Request) {
   const hasVerifiedExperienceCompletion = (experienceName: string) => {
     const queueItem = projectQueueItems.find(item => isLikelyExperienceAlias(item.name, experienceName))
     const queueProgress = queueItem ? getProjectQueueProgress(queueItem) : null
-    if (queueProgress?.hasIdBoundQuestion) return queueProgress.complete
+    if (queueProgress?.hasIdBoundQuestion) return queueProgress.materialComplete
     const evidence = getExperienceEvidence(experienceName, queueItem?.id)
     if (!evidence) return false
     // A role description plus one generic follow-up is not a deep dive. Require
@@ -362,7 +378,7 @@ export async function POST(req: Request) {
     ...startedExperiences,
     ...(activeExperience ? [activeExperience] : []),
     ...projectQueueItems
-      .filter(item => getProjectQueueProgress(item).complete)
+      .filter(item => getProjectQueueProgress(item).materialComplete)
       .map(item => item.name),
   ])).filter(name => hasVerifiedExperienceCompletion(name))
   const verifiedCompletedExperienceNames = Array.from(new Set([
@@ -541,7 +557,7 @@ export async function POST(req: Request) {
   // Always select the first item whose own question-id evidence is incomplete.
   const pendingProjectQueueItems = projectQueueItems.filter(item => {
     const progress = getProjectQueueProgress(item)
-    if (progress.hasIdBoundQuestion) return !progress.complete
+    if (progress.hasIdBoundQuestion) return !progress.closed
     const legacyEvidence = getExperienceEvidence(item.name, item.id)
     return !legacyEvidence || !legacyEvidence.hasContribution ||
       (!legacyEvidence.hasChallenge && !legacyEvidence.hasSolution) ||
@@ -804,8 +820,9 @@ export async function POST(req: Request) {
   const pendingProjectQueueItem = pendingProjectQueueItems[0]
   // The first incomplete queue id is authoritative. activeExperience and model
   // EXP tags are legacy display hints and can never reorder this queue.
-  const pendingDiscoveredProject = pendingProjectQueueItem?.name ||
-    allDiscoveredProjectNames.find(name => !completedExperienceSet.has(normalizeName(name))) || ''
+  const pendingDiscoveredProject = projectQueueItems.length > 0
+    ? pendingProjectQueueItem?.name || ''
+    : allDiscoveredProjectNames.find(name => !completedExperienceSet.has(normalizeName(name))) || ''
   const startedExperienceSet = new Set(startedExperiences.map(normalizeName))
   const targetMajorForRanking = quickInfo?.targetMajor?.trim() || quickInfo?.major?.trim() || '目标专业'
   const applicantDisciplineText = `${quickInfo?.major || ''} ${quickInfo?.targetMajor || ''}`
@@ -990,10 +1007,31 @@ export async function POST(req: Request) {
     role: message.role,
     content: message.content,
   }))
-  let response = await streamDeepSeek(
-    systemPrompt,
-    modelConversation,
-  )
+  const deterministicSkipDraft = controlAction === 'skip'
+    ? turnObjective === 'project_open_experience' && turnSubject
+      ? `接下来聊“${turnSubject}”：你在其中主要负责或亲自完成了哪一部分？\n\n[ASKING:project]`
+      : turnObjective === 'project_deep_dive_process' && turnSubject
+        ? `继续说“${turnSubject}”：其中哪次关键判断或处理最值得展开，你当时具体是怎么做的？\n\n[ASKING:project]`
+        : turnObjective === 'project_deep_dive_outcome' && turnSubject
+          ? `“${turnSubject}”最后形成了什么结果，或者得到了什么具体反馈？\n\n[ASKING:project]`
+          : turnObjective === 'project_identify_experience'
+            ? '这段经历具体是什么？先简单说名称和大致内容就好。\n\n[ASKING:project]'
+            : turnObjective === 'project_supplemental_inventory'
+              ? '除了已经聊过的内容，还有其他项目、竞赛或实践可以补充吗？没有也可以直接说没有。\n\n[ASKING:project]'
+              : turnObjective === 'motivation_major'
+                ? `结合刚才聊过的经历，是什么让你决定继续申请${quickInfo?.targetMajor?.trim() || '这个专业或方向'}？\n\n[ASKING:motivation]`
+                : turnObjective === 'motivation_school'
+                  ? `你为什么选择${quickInfo?.targetSchool?.trim() || '目前的目标院校或地区'}？\n\n[ASKING:motivation]`
+                  : turnObjective.startsWith('plan')
+                    ? '完成学业后，你希望先进入什么类型的岗位、行业或发展环境？\n\n[ASKING:plan]'
+                    : ''
+    : ''
+  let response = deterministicSkipDraft
+    ? new Response(deterministicSkipDraft, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+    : await streamDeepSeek(
+        systemPrompt,
+        modelConversation,
+      )
   // Prompts are not an enforcement boundary. When the experience target has not
   // been met, never stream a model response that skips project discovery for a
   // later dimension. Buffer this high-risk transition, validate its actual
