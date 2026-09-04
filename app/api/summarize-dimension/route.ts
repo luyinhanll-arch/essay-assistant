@@ -9,7 +9,6 @@ const DIMENSION_LABELS: Record<string, string> = {
   project: '项目经历',
   motivation: '申请动机',
   plan: '未来规划',
-  personal: '个人特质'
 }
 
 // 段落格式：面向申请者的自然语言叙述，用于高亮页 Step 1 展示
@@ -20,7 +19,6 @@ const PARAGRAPH_FOCUS: Record<string, string> = {
   project:    '项目/活动名称与目的、采用的方法或思路（不限技术类）、遇到的难题与解决方式、最终结果或影响',
   motivation: '申请这个方向的具体触发点（哪件事/哪个时刻让你决定的）、为什么选择这个专业/学校、出国读书的深层动机',
   plan:       '毕业后的目标方向或职位、短期计划（1-2年）、长期愿景',
-  personal:   '用户确认、补充或纠正后的核心特质，以及前述课程、项目、实习或科研中能够支撑这些特质的行为证据',
 }
 
 /**
@@ -31,15 +29,10 @@ const PARAGRAPH_FOCUS: Record<string, string> = {
  *   other sections are not missed.  The per-dimension exclusion rules in the
  *   prompt prevent cross-contamination.
  *
- * Single-entry dimensions (academic / motivation / plan / personal):
+ * Single-entry dimensions (academic / motivation / plan):
  *   Slice to the dedicated Q&A window to avoid polluting the summary with
  *   unrelated content from elsewhere in the conversation.
  *
- *   Special cases for single-entry:
- *   - motivation + DEFERRED: extend the window to include the retrospective
- *     revisit just before [ASKING:personal].
- *   - personal: drop the opening AI trait-summary message so only the user's
- *     own words are summarised.
  */
 function extractDimWindow(messages: Message[], dim: string): Message[] {
   // Multi-entry dims: always use full conversation
@@ -65,7 +58,6 @@ function extractDimWindow(messages: Message[], dim: string): Message[] {
     const naturalStart: Record<string, RegExp> = {
       motivation: /(?:为什么|为何|是什么.*(?:让|使|促使)).*(?:申请|选择|深造|继续.*方向)|(?:申请|选择).*(?:原因|动机)|对[“\"「『]?.+?[”\"」』]?这个专业.*(?:理解|变化).*(?:申请|继续)/,
       plan: /(?:读完|完成).*(?:硕士|项目).*(?:之后|以后)|毕业后.*(?:方向|打算|想)|未来.*(?:规划|方向|打算)|职业.*(?:规划|方向|目标)/,
-      personal: /你自己.*(?:这种感觉|这个特点|特质)|什么特质.*(?:代表|形容).*你|你觉得自己.*(?:是|有什么)/,
     }
     const pattern = naturalStart[dim]
     if (pattern) {
@@ -76,43 +68,12 @@ function extractDimWindow(messages: Message[], dim: string): Message[] {
   }
   if (start === -1) return messages
 
-  // ── motivation: if deferred, extend window to include the revisit ──────────
-  if (dim === 'motivation') {
-    const tail = messages.slice(start)
-    const wasDeferred = tail.some(
-      m => m.role === 'assistant' && /\[DEFERRED[：:]\s*motivation\]/i.test(src(m))
-    )
-    if (wasDeferred) {
-      let end = messages.length
-      for (let i = start + 1; i < messages.length; i++) {
-        if (messages[i].role === 'assistant' &&
-            /\[ASKING[：:]\s*personal\]/i.test(src(messages[i]))) {
-          end = i; break
-        }
-      }
-      return messages.slice(start, end)
-    }
-  }
-
-  // ── personal: use the full personal section (from first user reply after
-  //   [ASKING:personal] through end of conversation, including the AI conclusion
-  //   which summarises traits observed across all dimensions).
-  if (dim === 'personal') {
-    const sliced = messages.slice(start)
-    const firstUserIdx = sliced.findIndex(m => m.role === 'user')
-    if (firstUserIdx !== -1) return sliced.slice(firstUserIdx)
-    return sliced
-  }
-
   let end = messages.length
   for (let i = start + 1; i < messages.length; i++) {
     if (messages[i].role === 'assistant') {
       const m = src(messages[i]).match(/\[ASKING[：:]\s*([^\]]+)\]/i)
       if (m && m[1].trim() !== dim) { end = i; break }
       if (dim === 'motivation' && /(?:读完|完成).*(?:硕士|项目).*(?:之后|以后)|毕业后.*(?:方向|打算|想)|未来.*(?:规划|方向|打算)|职业.*(?:规划|方向|目标)/.test(messages[i].content)) {
-        end = i; break
-      }
-      if (dim === 'plan' && /你自己.*(?:这种感觉|这个特点|特质)|什么特质.*(?:代表|形容).*你|你觉得自己.*(?:是|有什么)/.test(messages[i].content)) {
         end = i; break
       }
     }
@@ -132,7 +93,7 @@ function escapeRegExp(value: string): string {
 function removeCourseOnlyProjectSections(summary: string, messages: Message[]): string {
   if (!summary.includes('# ')) return summary
   const sections = summary.split(/(?=^# )/m).filter(Boolean)
-  const explicitProjectCarrier = /大作业|课程作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|独立项目|小组项目|竞赛|比赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|公益|志愿|社团/
+  const explicitProjectCarrier = /大作业|课程作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|独立项目|小组项目|竞赛|比赛|大赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|公益|志愿|社团/
   const routineCourseLearning = /(?:这门|该门|一门|核心|专业)?课程|课上|课堂|实验课|课程实验|观摩|仪器练习|学会|掌握|知识点/
 
   const kept = sections.filter(section => {
@@ -160,7 +121,7 @@ function recoverProjectSummary(messages: Message[]): string {
   const start = messages.findIndex(message => message.role === 'assistant' &&
     (message.questionDimension === 'project' ||
       /\[ASKING[：:]\s*project\]/i.test(src(message)) ||
-      /(?:有没有|参加过|做过|聊聊|听听).{0,100}(?:竞赛|比赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业)/.test(src(message)) ||
+      /(?:有没有|参加过|做过|聊聊|听听).{0,100}(?:竞赛|比赛|大赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业)/.test(src(message)) ||
       classifyInterviewQuestion(src(message)) === 'project'))
   if (start < 0) return '无'
 
@@ -169,7 +130,7 @@ function recoverProjectSummary(messages: Message[]): string {
     const message = messages[index]
     if (message.role !== 'assistant') continue
     const dimension = message.questionDimension || classifyInterviewQuestion(src(message))
-    if (['motivation', 'plan', 'personal'].includes(dimension || '')) {
+    if (['motivation', 'plan'].includes(dimension || '')) {
       end = index
       break
     }
@@ -178,7 +139,7 @@ function recoverProjectSummary(messages: Message[]): string {
   const answers = window.filter(message => message.role === 'user')
     .map(message => message.content.trim()).filter(Boolean)
   const identityAnswer = answers.find(answer =>
-    /竞赛|比赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业/.test(answer)) || ''
+    /竞赛|比赛|大赛|模拟法庭|法律援助|个人项目|开源项目|社会实践|志愿|社团|课程设计|毕业设计|大作业/.test(answer)) || ''
   if (!identityAnswer || /^(?:没有|没|无|暂时没有)/.test(identityAnswer)) return '无'
   const title = identityAnswer.split(/[：:。；;！!\n]/)[0]
     .replace(/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?/, '')
@@ -202,7 +163,7 @@ export async function POST(req: Request) {
       structuredSummary = '',
     }: { dimension: string; messages: Message[]; format?: 'structured' | 'paragraph'; relatedSummaries?: Record<string, string>; cvText?: string; cvAnalysis?: string; structuredSummary?: string } = await req.json()
 
-    if (!dimension || !rawMessages || !Array.isArray(rawMessages)) {
+    if (!dimension || !(dimension in DIMENSION_LABELS) || !rawMessages || !Array.isArray(rawMessages)) {
       return Response.json({ error: '缺少必要参数' }, { status: 400 })
     }
 
@@ -328,25 +289,6 @@ ${excludeRule}- 不要泛泛而谈，不要重复，不要加额外说明
 # 腾讯
 · 你在微信支付风控团队实习 2 个月，负责优化规则引擎
 · 你通过分析误判样本调整特征权重，将误判率从 12% 降至 7% 并已上线`
-      } else if (dimension === 'personal') {
-        // 个人特质：专门提炼性格特质，不总结经历
-        userPrompt = `请根据以下访谈对话，提炼申请者的核心个人特质。
-
-对话内容：
-${conversationText}
-
-## 输出要求（严格遵守）：
-- 每行一个特质，以「· 」开头，3-4 个要点，每点 15-35 字
-- **每个要点描述一种性格特质或思维方式**（如：系统性思维、目标感强、韧性、好奇心驱动、善于反思等），用第二人称（"你"）表达
-- 可以用一句话简短点明这个特质是如何体现的，但**重点是特质本身，不是事件经过**
-- **不要罗列项目名称、公司名称、经历细节**——那些属于其他维度，这里只写特质
-- 不要泛泛而谈（不要写"你是一个努力的人"），要有质感（"你在面对模糊问题时，习惯先动手做原型再反推逻辑"）
-- 不要加标题或额外说明
-
-示例：
-· 你有很强的目标感，一旦认定方向就会主动寻找资源推进，不依赖外部推动
-· 你习惯在行动中思考，遇到不确定的情况会先尝试、再总结，而非等到"想清楚"再动
-· 你对细节有天然的敏感度，能在别人忽视的地方发现问题并持续打磨`
       } else {
         // 其他单条目维度（motivation/plan）：分点输出
         userPrompt = `请根据以下访谈对话，用第二人称（"你"）分点总结申请者在【${dimensionLabel}】方面的情况。
@@ -408,16 +350,6 @@ ${excludeRule}- 不加额外说明，直接输出
 # 腾讯
 · 微信支付风控团队，实习 2 个月
 · 误判率从 12% 降至 7%`
-      } else if (dimension === 'personal') {
-        userPrompt = `请从以下对话中提炼用户的 2-3 个核心个人特质，每条一行。
-
-对话内容：
-${conversationText}
-
-## 输出要求：
-- 每行以「· 」开头，10-20 字，只描述特质本身
-- 写性格特质、思维方式（如"系统性思维"、"目标感强"、"韧性"），不写项目名称或经历细节
-- 不加标题，不加说明，直接输出`
       } else {
         userPrompt = `请从以下对话中提取用户【${dimensionLabel}】最关键的 2-3 条信息，每条一行。
 

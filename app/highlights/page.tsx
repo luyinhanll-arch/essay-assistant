@@ -91,7 +91,7 @@ function PersonaCard({ persona, color, selected, onSelect }: {
 
 const DIM_ICONS: Record<string, string> = {
   academic: '🎓', project: '💻', internship: '🏢',
-  research: '🔬', motivation: '🎯', plan: '🗺️', personal: '✨',
+  research: '🔬', motivation: '🎯', plan: '🗺️',
 }
 
 // Rendered as pairs (side-by-side when both present)
@@ -546,6 +546,7 @@ export default function PersonaPage() {
   // when an older progress event omitted it. A non-empty structured summary is
   // durable evidence that the dimension was actually collected, so confirmation
   // must not hide that card merely because coveredDimensions lagged behind.
+  const activeDimensionKeys = new Set(INTERVIEW_DIMENSIONS.map(dimension => dimension.key))
   const confirmationCoveredDimensions = Array.from(new Set([
     ...coveredDimensions,
     ...(interviewComplete
@@ -553,7 +554,7 @@ export default function PersonaPage() {
           .filter(([, summary]) => summary.trim() && !/^(?:#\s*)?(?:无|暂无|没有)/.test(summary.trim()))
           .map(([dimension]) => dimension)
       : []),
-  ]))
+  ])).filter(dimension => activeDimensionKeys.has(dimension))
 
   // CV analysis owns classification. Later summaries may enrich wording, but may
   // never move an item between research / internship / project.
@@ -755,7 +756,7 @@ export default function PersonaPage() {
 
   // Dims that need (re)generation: covered, non-empty, and step1Summary absent or cleared.
   // Used as effect dep so the effect re-fires whenever the interview page invalidates a summary.
-  const LAST_DIMS = ['motivation', 'plan', 'personal']
+  const LAST_DIMS = ['motivation', 'plan']
   const pendingDimsKey = confirmationCoveredDimensions
     .filter(d => !emptyDimensions.includes(d) && !step1Summaries[d])
     .filter(d => !LAST_DIMS.includes(d) || interviewComplete)
@@ -815,7 +816,7 @@ export default function PersonaPage() {
         await fetchSummary(dim, relatedSummaries)
       }
 
-      // 3. 最后生成申请动机、未来规划、个人特质
+      // 3. 最后生成申请动机和未来规划
       for (const dim of last) {
         await fetchSummary(dim)
       }
@@ -947,21 +948,6 @@ export default function PersonaPage() {
               </div>
             )
           })}
-
-          {/* personal — full width */}
-          {confirmationCoveredDimensions.includes('personal') && dimHasContent('personal') && (() => {
-            const dim = INTERVIEW_DIMENSIONS.find(d => d.key === 'personal')!
-            return (
-              <div className="mb-3">
-                <ExperienceCard
-                  dimKey="personal" label={dim.label}
-                  summary={paragraphLoading['personal'] ? '' : (step1Summaries['personal'] || '')}
-                  isCovered={confirmationCoveredDimensions.includes('personal')}
-                  onSave={val => saveAndInvalidate('personal', val)}
-                />
-              </div>
-            )
-          })()}
 
           {/* CTA */}
           <div className="border-t border-stone-200 pt-8 mt-6">

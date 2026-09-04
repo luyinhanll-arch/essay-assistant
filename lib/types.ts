@@ -70,5 +70,4 @@ export const INTERVIEW_DIMENSIONS = [
   { key: 'project',    label: '项目经历' },
   { key: 'motivation', label: '申请动机' },
   { key: 'plan',       label: '未来规划' },
-  { key: 'personal',   label: '个人特质' },
 ]

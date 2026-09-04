@@ -9,7 +9,7 @@ import {
   hasCompleteAcademicBackgroundEvidence,
 } from '@/lib/interview-progress'
 
-const ALL_DIMENSIONS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+const ALL_DIMENSIONS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
 
 export async function POST(req: Request) {
   const {
@@ -45,7 +45,7 @@ export async function POST(req: Request) {
     const right = normalizeName(rightRaw)
     if (!left || !right) return false
     if (left.includes(right) || right.includes(left)) return true
-    const carrier = /(模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|竞赛|比赛|实习|科研|课题)/g
+    const carrier = /(模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|竞赛|比赛|大赛|实习|科研|课题)/g
     const leftCarrier = left.match(carrier)?.join('') || ''
     const rightCarrier = right.match(carrier)?.join('') || ''
     if (!leftCarrier || leftCarrier !== rightCarrier) return false
@@ -65,8 +65,9 @@ export async function POST(req: Request) {
     科研经历: 'research',
   }
   let effectiveCoveredDimensions = coveredDimensions.filter(dimension => {
+    if (!ALL_DIMENSIONS.includes(dimension)) return false
     if (!cvText.trim()) return true
-    if (['motivation', 'plan', 'personal'].includes(dimension)) return pendingEntries.length === 0
+    if (['motivation', 'plan'].includes(dimension)) return pendingEntries.length === 0
     return !pendingEntries.some(entry => typeToDimension[entry.type] === dimension)
   })
 
@@ -86,7 +87,10 @@ export async function POST(req: Request) {
     if (message.role !== 'assistant') continue
     const source = messageSource(message)
     const metadataDimension = message.questionDimension ||
-      source.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan|personal)\]/i)?.[1] || ''
+      source.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan)\]/i)?.[1] || ''
+    if (metadataDimension && message.questionSubject) {
+      experienceDimensionByName.set(normalizeName(message.questionSubject), metadataDimension)
+    }
     for (const match of source.matchAll(/\[EXP(?:_DONE)?[：:]\s*([^\]]+)\]/gi)) {
       const normalizedName = normalizeName(match[1])
       if (metadataDimension) experienceDimensionByName.set(normalizedName, metadataDimension)
@@ -94,7 +98,7 @@ export async function POST(req: Request) {
       // Generic academic questions about a "small project or experiment" are
       // course-depth evidence and cannot silently become a counted project.
       const explicitlyOpensIndependentProject =
-        /(?:课程(?:中|里|之外|以外)|课外|课堂之外).{0,40}(?:大作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|竞赛|比赛|个人项目|社会实践|公益|志愿|社团|学生组织)|(?:有没有|参加过|做过|投入过|接下来聊).{0,30}(?:大作业|课程设计|课程论文|毕业设计|竞赛|比赛|个人项目|社会实践|公益|志愿|社团|学生组织)/.test(source)
+        /(?:课程(?:中|里|之外|以外)|课外|课堂之外).{0,40}(?:大作业|课程项目|课程设计|课程论文|毕业论文|毕业设计|竞赛|比赛|大赛|个人项目|社会实践|公益|志愿|社团|学生组织)|(?:有没有|参加过|做过|投入过|接下来聊).{0,30}(?:大作业|课程设计|课程论文|毕业设计|竞赛|比赛|大赛|个人项目|社会实践|公益|志愿|社团|学生组织)/.test(source)
       if (metadataDimension === 'project' && explicitlyOpensIndependentProject) {
         qualifiedProjectExperienceNames.add(normalizedName)
       }
@@ -119,12 +123,39 @@ export async function POST(req: Request) {
     const identity = answer.split(/[。；;！!\n]/)[0].trim().slice(0, 40)
     return identity.length >= 2 ? [identity] : []
   })
+  const PROJECT_NAME_CARRIER = /(?:模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|大作业|竞赛|比赛|大赛|个人项目|开源项目|社会实践|志愿|公益|社团|学生组织)/
+  const parseProjectInventoryLine = (rawLine: string) => {
+    const cleaned = rawLine
+      .replace(/^\s*(?:\d+[.、)]|[一二三四五六]+[、.)]|[-•·])\s*/, '')
+      .replace(/^(?:我)?(?:参加过|参与过|做过|有过)\s*/, '')
+      .trim()
+    if (!cleaned) return []
+
+    // Applicants commonly put several named competitions on one line joined by
+    // “和/以及”. Split only when at least two fragments independently contain a
+    // project carrier, so prose such as “负责清洗和建模” stays inside one story.
+    const fragments = cleaned
+      .split(/(?:、|，|,|；|;|以及|还有|和)/)
+      .map(fragment => fragment.trim())
+      .filter(Boolean)
+    const namedFragments = fragments.filter(fragment => PROJECT_NAME_CARRIER.test(fragment))
+    const candidates = namedFragments.length >= 2 ? namedFragments : [cleaned]
+
+    return candidates.flatMap(candidate => {
+      if (!PROJECT_NAME_CARRIER.test(candidate)) return []
+      const identity = candidate.split(/[：:。；;！!]/)[0]
+        .replace(/[\*#「」『』《》]/g, '').trim().slice(0, 40)
+      if (/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(identity)) return []
+      if (/^(?:这|该|那)(?:篇|个|项|段).{0,30}(?:是|由|属于|完成|负责|获得|得到)/.test(identity)) return []
+      return identity.length >= 2 ? [identity] : []
+    })
+  }
   const inferredProjectNames = messages.flatMap((message, index) => {
     if (message.role !== 'assistant') return []
     const source = messageSource(message)
     const belongsToProject = message.questionDimension === 'project' ||
       /\[ASKING[：:]\s*project\]/i.test(source)
-    const opensConcreteProject = /有没有.{0,20}(?:大作业|课程设计|课程论文|毕业设计|竞赛|个人项目|社团|志愿)|哪(?:一|个|项).{0,16}(?:项目|设计|作业|活动)|(?:参加过|做过).{0,12}(?:什么|哪些).{0,12}(?:竞赛|比赛|项目|实践|活动)|(?:什么|哪些).{0,12}(?:竞赛|比赛|个人项目|实践)/.test(source)
+    const opensConcreteProject = /有没有.{0,20}(?:大作业|课程设计|课程论文|毕业设计|竞赛|比赛|大赛|个人项目|社团|志愿)|哪(?:一|个|项).{0,16}(?:项目|设计|作业|活动)|(?:参加过|做过).{0,12}(?:什么|哪些).{0,12}(?:竞赛|比赛|大赛|项目|实践|活动)|(?:什么|哪些).{0,12}(?:竞赛|比赛|大赛|个人项目|实践)|(?:是什么|具体是).{0,12}(?:比赛|竞赛|大赛|项目|实践|活动)/.test(source)
     if (!belongsToProject || !opensConcreteProject) return []
     const answer = messages.slice(index + 1).find(candidate => candidate.role === 'user')?.content.trim() || ''
     if (!answer || /^(?:没有|没|无|都没有|想不到|暂时没有)/.test(answer)) return []
@@ -132,15 +163,7 @@ export async function POST(req: Request) {
     // the first line survived, so the second announced project disappeared.
     const lines = answer.split(/\n+/).map(line => line.trim()).filter(Boolean)
     const candidateLines = lines.length > 1 ? lines : answer.split(/[；;]/).map(line => line.trim()).filter(Boolean)
-    return candidateLines.flatMap(line => {
-      const cleaned = line.replace(/^\s*(?:\d+[.、)]|[一二三四五六]+[、.)]|[-•·])\s*/, '')
-      if (!/(?:模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|大作业|竞赛|比赛|个人项目|开源项目|社会实践|志愿|社团|学生组织)/.test(cleaned)) return []
-      const identity = cleaned.split(/[：:。；;！!]/)[0]
-        .replace(/[\*#「」『』]/g, '').trim().slice(0, 40)
-      if (/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(identity)) return []
-      if (/^(?:这|该|那)(?:篇|个|项|段).{0,30}(?:是|由|属于|完成|负责|获得|得到)/.test(identity)) return []
-      return identity.length >= 2 ? [identity] : []
-    })
+    return candidateLines.flatMap(parseProjectInventoryLine)
   })
   // Numbered user inventories are authoritative even when the preceding
   // question used wording outside the classifier's patterns.
@@ -148,12 +171,7 @@ export async function POST(req: Request) {
     if (message.role !== 'user') return []
     const lines = message.content.split(/\n+/).map(line => line.trim()).filter(Boolean)
     if (lines.filter(line => /^\s*(?:\d+[.、)]|[一二三四五六]+[、.)])/.test(line)).length < 2) return []
-    return lines.flatMap(line => {
-      const cleaned = line.replace(/^\s*(?:\d+[.、)]|[一二三四五六]+[、.)]|[-•·])\s*/, '')
-      if (!/(?:模拟法庭|法律援助|课程论文|课程研究|小组研究|小组报告|课程设计|毕业设计|大作业|竞赛|比赛|个人项目|开源项目|社会实践|志愿|社团|学生组织|实践项目)/.test(cleaned)) return []
-      const identity = cleaned.split(/[：:。；;！!]/)[0].replace(/[\*#「」『』《》]/g, '').trim().slice(0, 40)
-      return identity.length >= 2 ? [identity] : []
-    })
+    return lines.flatMap(parseProjectInventoryLine)
   })
   const allDiscoveredProjectNames = Array.from(new Set([...inferredProjectNames, ...directlyDeclaredProjectNames]))
   const hasVerifiedExperienceCompletion = (experienceName: string) => {
@@ -175,13 +193,31 @@ export async function POST(req: Request) {
         evidenceReplies.push(message.content.trim())
       }
     }
-    if (evidenceReplies.length >= 2) return true
     const evidence = evidenceReplies.join('\n')
-    return evidence.length >= 40 &&
-      /(?:最终|最后|结果|成绩|获奖|评价|反馈|老师|评委|采纳|落地|完成|形成|追回|调解|仲裁|发表|提交)/.test(evidence)
+    const hasContribution = /我.{0,12}(?:负责|承担|主导|完成|搭建|建立|设计|实现|分析|清洗|建模|撰写|组织|协调|提出|选择|决定|处理)/.test(evidence)
+    const hasChallenge = /(?:遇到|面临|出现|发现).{0,24}(?:问题|困难|挑战|偏差|异常|不足|瓶颈|冲突|不一致|不合理)|(?:困难|挑战|难点|瓶颈|冲突|数据缺失|样本不平衡)/.test(evidence)
+    const hasSolution = /(?:为了解决|针对|于是|因此|随后|通过).{0,40}(?:调整|改进|筛选|比较|验证|重做|重新|处理|解决|采用|引入|建立|设计)/.test(evidence)
+    // “结果解读” describes a responsibility, not an achieved outcome. Require
+    // an explicit result predicate instead of accepting the bare word “结果”.
+    const hasOutcome = /(?:最终|最后).{0,40}(?:完成|形成|实现|获得|提交|入选|获奖|提升|降低|改善)|结果(?:显示|表明|证明|为|是)|(?:成绩|获奖|评价|反馈|评委|老师).{0,20}(?:是|为|认为|肯定|认可)|(?:建议|方案|报告).{0,20}(?:采纳|落地|提交)/.test(evidence)
+    const hasReflection = /(?:意识到|认识到|学到|明白|反思|后来发现|这让我).{0,50}/.test(evidence)
+    const developmentSignals = [hasChallenge, hasSolution, hasOutcome, hasReflection].filter(Boolean).length
+    return hasContribution && developmentSignals >= 1 &&
+      (evidenceReplies.length >= 2 || developmentSignals >= 2)
   }
-  const verifiedCompletedExperienceNames = [...completedTaggedExperienceNames, ...completedExperiences].filter(name =>
-    cvText.trim() || hasVerifiedExperienceCompletion(name))
+  // Hidden EXP_DONE tags improve the UI, but they are not the only completion
+  // source. Once a started experience has enough verified dialogue evidence, the
+  // server may advance deterministically even if the model forgot the tag.
+  const evidenceCompletedExperienceNames = Array.from(new Set([
+    ...taggedExperienceNames,
+    ...startedExperiences,
+    ...(activeExperience ? [activeExperience] : []),
+  ])).filter(name => hasVerifiedExperienceCompletion(name))
+  const verifiedCompletedExperienceNames = Array.from(new Set([
+    ...completedTaggedExperienceNames,
+    ...completedExperiences,
+    ...evidenceCompletedExperienceNames,
+  ])).filter(name => cvText.trim() || hasVerifiedExperienceCompletion(name))
   const observedExperienceNames = Array.from(new Set([
     ...startedExperiences,
     ...completedExperiences,
@@ -206,7 +242,7 @@ export async function POST(req: Request) {
   // Recover research/internship availability deterministically from the combined
   // pre-screen answer (for example “有一段实习，没有科研”). This state must not
   // depend on whether the model remembered to emit [EMPTY:].
-  const effectiveEmptyDimensions = [...emptyDimensions]
+  const effectiveEmptyDimensions = emptyDimensions.filter(dimension => ALL_DIMENSIONS.includes(dimension))
   let announcedInternshipCount = 0
   if (!cvText.trim()) {
     const availability = extractPreScreenAvailability(messages)
@@ -298,21 +334,47 @@ export async function POST(req: Request) {
       academicIsInCurrentWindow && !academicStageComplete) {
     effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'academic')
   }
-  const COURSE_PROJECT_QUESTION = /课程(?:中|里|学习中)?.{0,30}(?:大作业|课程作业|课程项目|课程设计|课程论文|毕业论文|毕业设计)|(?:大作业|课程设计|课程论文|毕业设计).{0,20}(?:投入|印象|收获|做过|有没有)/
-  const EXTRACURRICULAR_PROJECT_QUESTION = /(?:课程|课堂)(?:之外|以外)|课外.{0,20}(?:项目|活动|竞赛|实践)|除了.{0,20}(?:课程|上课|大作业).{0,30}(?:竞赛|个人项目|活动|实践|社团)|(?:参加过|做过).{0,16}(?:竞赛|比赛|个人项目|实践)|(?:竞赛|个人项目).{0,20}(?:社团|学生组织|社会实践|公益活动)/
-  const courseProjectStageAnswered = hasAnsweredQuestion(COURSE_PROJECT_QUESTION)
+  const EXTRACURRICULAR_PROJECT_QUESTION = /(?:课程|课堂)(?:之外|以外)|课外.{0,20}(?:项目|活动|竞赛|比赛|大赛|实践)|除了.{0,20}(?:课程|上课|大作业).{0,30}(?:竞赛|比赛|大赛|个人项目|活动|实践|社团)|(?:参加过|做过).{0,16}(?:竞赛|比赛|大赛|个人项目|实践)|(?:竞赛|比赛|大赛|个人项目).{0,20}(?:社团|学生组织|社会实践|公益活动)/
   const extracurricularStageAnswered = hasAnsweredQuestion(EXTRACURRICULAR_PROJECT_QUESTION)
-  const FINAL_EXPERIENCE_FALLBACK_QUESTION = /学生组织|社团.{0,20}(?:负责|组织|策划|产出)|志愿.{0,12}(?:活动|服务)|公益.{0,12}(?:活动|实践)|帮(?:同学|老师|社团).{0,20}(?:做|解决|搭建)/
-  const finalExperienceFallbackExhausted = hasNegativeAnswerToQuestion(FINAL_EXPERIENCE_FALLBACK_QUESTION)
-  // Once the applicant has declined the final broad discovery prompt, accept the
-  // real inventory. Do not keep rotating through increasingly specific examples
-  // (translation, database searches, etc.) merely to reach a numeric target.
-  const projectDiscoveryDeclined = finalExperienceFallbackExhausted || messages.some((message, index) => {
+  const SUPPLEMENTAL_PROJECT_INVENTORY_QUESTION = /(?:再|还|另外).{0,24}(?:补充|想到|找出|讲).{0,20}(?:经历|项目|实践|活动|课程作业|课程论文)|如果.{0,20}(?:再补|还要补).{0,16}(?:一段|经历|项目)/
+  const supplementalProjectInventoryAnswered = hasAnsweredObjective(
+    'project_supplemental_inventory',
+    SUPPLEMENTAL_PROJECT_INVENTORY_QUESTION,
+  )
+  const PROJECT_INVENTORY_QUESTION = /(?:(?:有没有|是否有|参加过|做过|还有|另外|再补充|再想想|除此之外|除已谈内容外).{0,80}(?:项目|竞赛|比赛|大赛|模拟法庭|法律援助|课程项目|课程设计|课程论文|毕业设计|社会实践|志愿|公益|社团|学生组织|实践|活动)|(?:项目|竞赛|比赛|大赛|模拟法庭|法律援助|课程项目|课程设计|课程论文|毕业设计|社会实践|志愿|公益|社团|学生组织).{0,60}(?:有没有|是否有|列出|名称|大致内容))/
+  const NEGATIVE_PROJECT_INVENTORY_REPLY = /^(?:没有|没|无|没有了|没了|也没有|都没有|想不到|暂时没有|好像没有|没有特别合适的|没有其他了|没有别的了)[了呢啊吧。！!\s]*$/
+  // A short answer such as “没了” only exhausts discovery when it is the direct
+  // reply to a server-identified project inventory question. Opening target-school
+  // checks and research/internship pre-screening must never close this dimension.
+  const projectDiscoveryDeclined = messages.some((message, index) => {
     if (message.role !== 'assistant') return false
     const source = messageSource(message)
-    if (!/(?:还有|另外|再).{0,24}(?:经历|项目|活动|实践|素材)|学生组织|社团|志愿|公益/.test(source)) return false
-    const reply = messages.slice(index + 1).find(candidate => candidate.role === 'user')
-    return Boolean(reply && /^(?:没有|没|无|没有了|没了|也没有|想不到|暂时没有)[了呢啊。！!\s]*$/.test(reply.content.trim()))
+    const belongsToProject = message.questionDimension === 'project' ||
+      /\[ASKING[：:]\s*project\]/i.test(source)
+    if (!belongsToProject) return false
+
+    const isInventoryQuestion = ['project_inventory', 'project_supplemental_inventory']
+      .includes(message.questionObjective || '') ||
+      (!message.questionObjective && PROJECT_INVENTORY_QUESTION.test(source))
+    if (!isInventoryQuestion) return false
+
+    const explicitlyBoundReply = message.id
+      ? messages.find(candidate =>
+          candidate.role === 'user' && candidate.replyToMessageId === message.id)
+      : undefined
+    let adjacentReply: Message | undefined
+    if (!explicitlyBoundReply) {
+      for (let replyIndex = index + 1; replyIndex < messages.length; replyIndex += 1) {
+        const candidate = messages[replyIndex]
+        if (candidate.role === 'assistant') break
+        if (candidate.role === 'user') {
+          adjacentReply = candidate
+          break
+        }
+      }
+    }
+    const reply = explicitlyBoundReply || adjacentReply
+    return Boolean(reply && NEGATIVE_PROJECT_INVENTORY_REPLY.test(reply.content.trim()))
   })
   const projectIsInCurrentWindow = messages.some(message =>
     message.role === 'assistant' && /\[ASKING[：:]\s*project\]/i.test(messageSource(message)))
@@ -327,18 +389,12 @@ export async function POST(req: Request) {
       !effectiveCoveredDimensions.includes('project')) {
     effectiveCoveredDimensions.push('project')
   }
-  const hasEnteredLateStage = messages.some(message => {
-    if (message.role !== 'assistant') return false
-    const source = messageSource(message)
-    return ['motivation', 'plan', 'personal'].includes(message.questionDimension || '') ||
-      /\[ASKING[：:]\s*(?:motivation|plan|personal)\]/i.test(source)
-  })
-  // Opening motivation is an irreversible server transition: it proves that
-  // experience discovery was closed. Later count drift must never reopen project.
-  if (!cvText.trim() && hasEnteredLateStage && !effectiveCoveredDimensions.includes('project')) {
+  // The first pass only interviews projects the applicant actually volunteered.
+  // Once that queue is empty, project is complete regardless of a numeric target.
+  if (!cvText.trim() && extracurricularStageAnswered && pendingProjectCandidates.length === 0 &&
+      allDiscoveredProjectNames.length > 0 && !effectiveCoveredDimensions.includes('project')) {
     effectiveCoveredDimensions.push('project')
   }
-
   const MAJOR_MOTIVATION_QUESTION = /为什么.{0,24}(?:选择|申请|深耕|继续).{0,24}(?:专业|方向)|(?:专业|方向).{0,24}(?:吸引|兴趣|契机|为什么)|是什么让你.{0,16}(?:决定|想).{0,16}(?:继续读|申请|深耕|沿着.*方向)/
   const escapePattern = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const targetSchoolTokens = Array.from(new Set([
@@ -368,14 +424,10 @@ export async function POST(req: Request) {
 
   const planAnsweredFromHistory = hasSubstantiveAnsweredQuestion(/\[ASKING[：:]\s*plan\]/i) ||
     hasSubstantiveAnsweredQuestion(/(?:毕业后|读完.{0,10}(?:硕士|博士|项目)|职业.{0,8}(?:方向|规划)|未来.{0,8}(?:方向|规划)).*[？?]/i)
-  const personalAnsweredFromHistory = hasAnsweredQuestion(/\[ASKING[：:]\s*personal\]/i)
   // Client state and model tags are hints, not authority. A dimension cannot be
   // carried forward as complete without its dedicated question and answer.
   if (!cvText.trim() && !planAnsweredFromHistory) {
     effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'plan')
-  }
-  if (!cvText.trim() && (!planAnsweredFromHistory || !personalAnsweredFromHistory)) {
-    effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'personal')
   }
 
   // Promote dimensions from deterministic conversation evidence when the model
@@ -389,52 +441,14 @@ export async function POST(req: Request) {
         !effectiveCoveredDimensions.includes('motivation')) {
       effectiveCoveredDimensions.push('motivation')
     }
-    for (const dimension of ['plan', 'personal']) {
+    for (const dimension of ['plan']) {
       const marker = new RegExp(`\\[ASKING[：:]\\s*${dimension}\\]`, 'i')
-      const answered = dimension === 'personal'
-        ? hasAnsweredQuestion(marker)
-        : hasSubstantiveAnsweredQuestion(marker)
+      const answered = hasSubstantiveAnsweredQuestion(marker)
       if (answered && !effectiveCoveredDimensions.includes(dimension)) {
         effectiveCoveredDimensions.push(dimension)
       }
     }
 
-    // Personal traits are normally a synthesis of observed behaviour, not a
-    // mandatory extra questionnaire. Two substantial experience answers give
-    // enough evidence to derive them after planning has been handled.
-    const substantialExperienceAnswers = messages.filter((message, index) => {
-      if (message.role !== 'assistant') return false
-      const source = messageSource(message)
-      const askedDimension = message.questionDimension ||
-        source.match(/\[ASKING[：:]\s*(research|internship|project)\]/i)?.[1] ||
-        classifyInterviewQuestion(source)
-      if (!['research', 'internship', 'project'].includes(askedDimension || '')) return false
-      const reply = messages.slice(index + 1).find(candidate => candidate.role === 'user')
-      return Boolean(reply && reply.content.trim().length >= 40)
-    }).length
-    const canDerivePersonal = substantialExperienceAnswers >= 2 &&
-      effectiveCoveredDimensions.includes('plan')
-    if (canDerivePersonal && !effectiveCoveredDimensions.includes('personal')) {
-      effectiveCoveredDimensions.push('personal')
-    }
-  }
-
-  // Apply the same evidence-first personal-trait rule to CV interviews. Their
-  // fixed experience queue provides equally strong behavioural evidence.
-  if (cvText.trim() && effectiveCoveredDimensions.includes('plan')) {
-    const substantialCvExperienceAnswers = messages.filter((message, index) => {
-      if (message.role !== 'assistant') return false
-      const source = messageSource(message)
-      const askedDimension = message.questionDimension ||
-        source.match(/\[ASKING[：:]\s*(research|internship|project)\]/i)?.[1] ||
-        classifyInterviewQuestion(source)
-      if (!['research', 'internship', 'project'].includes(askedDimension || '')) return false
-      const reply = messages.slice(index + 1).find(candidate => candidate.role === 'user')
-      return Boolean(reply && reply.content.trim().length >= 40)
-    }).length
-    if (substantialCvExperienceAnswers >= 2 && !effectiveCoveredDimensions.includes('personal')) {
-      effectiveCoveredDimensions.push('personal')
-    }
   }
 
   // Starting a deep dive is not completing it. Do not recover an entire research
@@ -495,15 +509,14 @@ export async function POST(req: Request) {
     priorExperienceDimensionReady('research') &&
     priorExperienceDimensionReady('internship')
 
-  // Experience priority policy: exhaust formal research and internships first.
-  // Projects are a top-up pool, not a mandatory dimension once 3 strong,
-  // distinct experiences have already been collected.
+  // Experience priority policy: exhaust formal research and internships first,
+  // then use the project dimension to build toward three distinct useful stories.
   const isRoutineCoursePractice = (name: string) =>
     /课程实操|课程实验|实验实操|上机实验|实验练习|仪器实操/.test(name) &&
-    !/项目|设计|竞赛|比赛|论文|报告|调研/.test(name)
-  // An experience counts toward the 3–4 target only after the model has closed
-  // its deep-dive arc and explicitly rated it useful. Merely mentioning/opening
-  // a course exercise or project must never advance the total.
+    !/项目|设计|竞赛|比赛|大赛|论文|报告|调研/.test(name)
+  // An experience counts only after its deep-dive arc has closed. An explicit
+  // low rating excludes it; otherwise a completed, correctly classified story
+  // remains countable even if the model omitted optional value metadata.
   const completedCandidates = Array.from(new Set([
     ...verifiedCompletedExperienceNames,
   ].map(normalizeName).filter(Boolean)))
@@ -519,11 +532,11 @@ export async function POST(req: Request) {
     const dimension = experienceDimensionByName.get(name)
     return ['research', 'internship', 'project'].includes(dimension || '') &&
       (dimension !== 'project' || qualifiedProjectExperienceNames.has(name) || inferredProjectNameSet.has(name)) &&
-      !isRoutineCoursePractice(name) && (value === 'high' || value === 'medium')
+      !isRoutineCoursePractice(name) && value !== 'low'
   })
   // The applicant's pre-screen answer and separately opened internship carriers
   // are the identity boundary. Model-generated aliases for a task inside the same
-  // internship must not inflate the 3–4 experience count.
+  // internship must not inflate the three-experience count.
   const internshipLimit = Math.max(announcedInternshipCount, observedInternshipNames.length)
   let acceptedInternships = 0
   const distinctExperienceNames = eligibleExperienceNames.filter(name => {
@@ -541,13 +554,25 @@ export async function POST(req: Request) {
     }
   }
   const concreteExperienceCount = canonicalExperienceNames.length
-  const priorityExperienceDimensionsResolved = ['research', 'internship'].every(dimension =>
-    effectiveCoveredDimensions.includes(dimension) || effectiveEmptyDimensions.includes(dimension))
-  const experienceTargetReached = concreteExperienceCount >= 3
-  if (!cvText.trim() && priorityExperienceDimensionsResolved && experienceTargetReached &&
-      !effectiveCoveredDimensions.includes('project') && !effectiveEmptyDimensions.includes('project')) {
-    // Treat project discovery as satisfied: the target was already met by the
-    // higher-priority research/internship pool, so do not collect excess stories.
+
+  // Aim for three useful stories, but allow only one supplemental inventory
+  // question. A negative or non-productive answer exhausts discovery and must
+  // never trap the applicant in the project dimension.
+  const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
+  const onlyConfirmedProjectAvailability = /^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(latestUserAnswer)
+  const shouldAskSupplementalProjectInventory = !cvText.trim() &&
+    extracurricularStageAnswered && pendingProjectCandidates.length === 0 &&
+    concreteExperienceCount < 3 && !supplementalProjectInventoryAnswered &&
+    !projectDiscoveryDeclined
+  const supplementalAnswerNeedsIdentity = !cvText.trim() &&
+    supplementalProjectInventoryAnswered && onlyConfirmedProjectAvailability &&
+    pendingProjectCandidates.length === 0
+  if (shouldAskSupplementalProjectInventory || supplementalAnswerNeedsIdentity) {
+    effectiveCoveredDimensions = effectiveCoveredDimensions.filter(dimension => dimension !== 'project')
+  } else if (!cvText.trim() && supplementalProjectInventoryAnswered &&
+      pendingProjectCandidates.length === 0 && !effectiveCoveredDimensions.includes('project')) {
+    // The single extra discovery opportunity has been consumed. Even if the
+    // answer yields no countable story, accept the real inventory and move on.
     effectiveCoveredDimensions.push('project')
   }
 
@@ -556,54 +581,18 @@ export async function POST(req: Request) {
     d => !effectiveCoveredDimensions.includes(d) && !deferredDimensions.includes(d) && !effectiveEmptyDimensions.includes(d)
   )
 
-  // Re-insert uncovered deferred dimensions just before 'personal'
-  const uncoveredDeferred = deferredDimensions.filter(d => !effectiveCoveredDimensions.includes(d))
+  // Revisit any legacy deferred dimension after the normal six-dimension pass.
+  const uncoveredDeferred = deferredDimensions.filter(d =>
+    ALL_DIMENSIONS.includes(d) && !effectiveCoveredDimensions.includes(d))
   if (uncoveredDeferred.length > 0) {
-    const personalIdx = missing.indexOf('personal')
-    if (personalIdx >= 0) {
-      missing.splice(personalIdx, 0, ...uncoveredDeferred)
-    } else {
-      missing.push(...uncoveredDeferred)
-    }
-  }
-
-  // ── Guard: personal must not appear before motivation + plan are handled ──
-  // If either motivation or plan is still in missing (i.e. not covered/deferred),
-  // remove personal from missing entirely so the AI cannot skip ahead to it.
-  {
-    const motivationHandled = effectiveCoveredDimensions.includes('motivation') || deferredDimensions.includes('motivation')
-    const planHandled = effectiveCoveredDimensions.includes('plan')
-    if (!motivationHandled || !planHandled) {
-      const personalIdx = missing.indexOf('personal')
-      if (personalIdx >= 0) missing.splice(personalIdx, 1)
-    }
-  }
-
-  // ── 3–4 concrete-experience target (no CV) ────────────────────────────────
-  // Count distinct experiences rather than non-empty dimensions.
-  const expDims = ['project', 'internship', 'research']
-  const allExpResolved = expDims.every(d => effectiveCoveredDimensions.includes(d) || effectiveEmptyDimensions.includes(d))
-  // Experience discovery is a forward-only phase. As soon as motivation (or a
-  // later dimension) has been opened, never insert needs_more_experiences again.
-  const lateStageStarted = coveredDimensions.some(dimension => ['motivation', 'plan', 'personal'].includes(dimension)) ||
-    deferredDimensions.includes('motivation') || hasEnteredLateStage
-  const needsExpBoost = !cvText.trim() && allExpResolved && concreteExperienceCount < 3 &&
-    !projectDiscoveryDeclined && !lateStageStarted
-
-  if (needsExpBoost && !missing.includes('needs_more_experiences')) {
-    const motivationIdx = missing.indexOf('motivation')
-    if (motivationIdx >= 0) {
-      missing.splice(motivationIdx, 0, 'needs_more_experiences')
-    } else {
-      missing.unshift('needs_more_experiences')
-    }
+    missing.push(...uncoveredDeferred.filter(d => !missing.includes(d)))
   }
 
   // This is the authoritative dimension for the response being generated. The
   // client reads it before the first text chunk, so the sidebar and the streamed
   // question advance together instead of reverse-engineering progress from prose.
   const authoritativeDimension = !cvText.trim()
-    ? (missing[0] === 'needs_more_experiences' ? 'project' : (missing[0] || ''))
+    ? (missing[0] || '')
     : ''
 
   // Convert structured cvAnalysis into natural prompt text
@@ -670,8 +659,6 @@ export async function POST(req: Request) {
   const hasUserConfirmedApplicationSpecialization = messages.some(message =>
     message.role === 'user' && /(?:申请|目标(?:专业|项目|方向)|打算申请).{0,30}[\u4e00-\u9fa5A-Za-z]{2,12}方向/.test(message.content)
   )
-  const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
-  const onlyConfirmedProjectAvailability = /^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(latestUserAnswer)
   if (!cvText.trim() && hasFilledTargetPreference && !alternativeTargetAnswered) {
     turnObjective = 'alternative_target'
     turnDirective = `申请者已经填写目标院校或地区“${quickInfo?.targetSchool || ''}”。先用一句话自然确认，然后只浅问：除此之外是否还有其他心仪院校、特别想去的学校或地区？不要追问原因，不要进入申请动机、学术背景或经历。`
@@ -702,11 +689,11 @@ export async function POST(req: Request) {
     turnDirective = focusCourseAnswered
       ? '继续学术背景。自然回应用户主动提到的感兴趣或印象深刻的课程，追问这些课程带来的核心知识、分析方法、思维方式或实际能力；一次只问一个核心问题，不强迫用户选定唯一一门课程。末尾输出 [ASKING:academic]。'
       : '继续学术背景。自然回应用户列出的核心课程，开放地询问其中有没有感兴趣、投入较多、收获较大或印象深刻的课程；允许用户说一门、多门或没有，不要求选出唯一代表课程，暂时不要问课程项目。末尾输出 [ASKING:academic]。'
-  } else if (!cvText.trim() && concreteExperienceCount < 3 && onlyConfirmedProjectAvailability &&
+  } else if (!cvText.trim() && onlyConfirmedProjectAvailability &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnObjective = 'project_identify_experience'
     turnDirective = `自然回应申请者确实有这类经历，然后用一个开放问题请其简单介绍这段经历是什么；不要拆成“名称、赛制、案件类型、团队、角色”等多个并列小问。不要把“有一段竞赛经历”当成项目名称，也不要在尚不知道项目是什么时直接问最大困难、收获或结果。末尾输出 [ASKING:project]。`
-  } else if (!cvText.trim() && concreteExperienceCount < 3 && pendingDiscoveredProject &&
+  } else if (!cvText.trim() && pendingDiscoveredProject &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnSubject = pendingDiscoveredProject
     turnObjective = startedExperienceSet.has(normalizeName(pendingDiscoveredProject))
@@ -714,17 +701,16 @@ export async function POST(req: Request) {
       : 'project_open_experience'
     turnDirective = startedExperienceSet.has(normalizeName(pendingDiscoveredProject))
       ? `继续深挖当前项目“${pendingDiscoveredProject}”。结合用户已经回答的内容，只选择角色、关键挑战、个人行动、结果或反思中最重要且尚未回答的一项自然追问；不得重复已经回答的信息，不得寻找另一段经历。末尾输出 [ASKING:project]。`
-      : `用户刚刚提供了项目候选“${pendingDiscoveredProject}”。结合其申请方向“${targetMajorForRanking}”，若回答中实际列出了多个候选，先在内部按专业相关性、任务复杂度、个人贡献、可验证成果和动机价值综合排序，选择含金量最高的一段开始；不要机械按列举顺序。先自然回应，再追问该段最值得补充的一个核心信息，不得同时询问其他项目。首次深挖需用所选项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
-  } else if (!cvText.trim() && concreteExperienceCount < 3 &&
+      : `用户已经提供了项目候选“${pendingDiscoveredProject}”。本轮正式打开这一段，只询问申请者在其中主要负责或亲自完成了哪一部分；不要同时询问题目、团队分工、困难、解决方法、结果或收获。首次深挖需用该项目的准确简称输出 [EXP:经历简称] 和 [ASKING:project]。`
+  } else if (!cvText.trim() && missing[0] === 'project' && shouldAskSupplementalProjectInventory) {
+    turnObjective = 'project_supplemental_inventory'
+    turnDirective = isLawApplicant
+      ? `当前只有 ${concreteExperienceCount} 段有效经历。只再补问一次：除已谈内容外，课程论文、课程研究、模拟法庭、法律援助、法学竞赛、社会调研或学生组织中，是否还有一段能体现申请者实际投入和产出的经历？有则只请其说名称与大致内容；没有也可以明确回答没有。不得拆成多轮分类追问。末尾输出 [ASKING:project]。`
+      : `当前只有 ${concreteExperienceCount} 段有效经历。只再补问一次：除已谈内容外，课程项目、竞赛、实践、学生组织或自主项目中，是否还有一段能体现申请者实际投入和产出的经历？有则只请其说名称与大致内容；没有也可以明确回答没有。不得拆成多轮分类追问。末尾输出 [ASKING:project]。`
+  } else if (!cvText.trim() &&
       (missing[0] === 'project' || readyToEnterProject) && !extracurricularStageAnswered) {
+    turnObjective = 'project_inventory'
     turnDirective = `先自然回应申请者刚才关于课程内容、方法或收获的回答，用一句具体但克制的承接完成学术背景转场；不要使用“更有区分度”“高价值候选”“含金量排序”等内部评估措辞。随后使用符合申请专业的经历载体进行盘点，本轮问题采用这个方向：“${projectInventoryQuestion}”不得出现明显属于其他学科的示例。收到清单后，你在内部结合申请方向“${targetMajorForRanking}”，按专业相关性、任务复杂度、个人贡献、可验证成果和动机价值排序，不能把排序过程说给用户。暂时不要询问课程作业。末尾输出 [ASKING:project]。`
-  } else if (!cvText.trim() && concreteExperienceCount < 3 &&
-      missing[0] === 'project' && extracurricularStageAnswered && !courseProjectStageAnswered) {
-    turnDirective = `课程外的高价值项目已经处理完，但有效经历仍不足三段。现在收集毕业设计、课程设计、课程论文或课程大作业候选；如有多项，结合申请方向“${targetMajorForRanking}”按专业相关性、复杂度、个人贡献和成果强度排序，只先深挖含金量最高的一项。末尾输出 [ASKING:project]。`
-  } else if (!cvText.trim() && missing[0] === 'needs_more_experiences' && !finalExperienceFallbackExhausted) {
-    turnDirective = !courseProjectStageAnswered
-      ? '竞赛、个人项目等高优先级项目已经询问完，但有效经历仍不足三段。现在再补问一项投入较多、可完整讲述的毕业设计、课程设计、课程论文或课程大作业；不要同时列问多个项目。末尾输出 [ASKING:project]。'
-      : '高优先级项目和课程项目询问后，有效经历仍不足三段。最后换一个尚未确认的方向，询问社团/学生组织/志愿公益中实际负责的事情，或曾为他人解决并产生结果的具体问题。说明规模小也可以、确实没有也没关系；只问一个问题。末尾输出 [ASKING:project]。'
   } else if (!cvText.trim() && missing[0] === 'motivation' && !majorMotivationAnswered) {
     turnObjective = 'motivation_major'
     turnDirective = '进入申请动机。结合用户已经讲过的经历，用一次自然提问邀请其说明两方面：是什么让其决定继续申请当前专业/方向，以及为什么选择目前的目标院校或地区。两方面最好都问到，但用户只回答其中一方面也不阻塞后续。不要询问未来规划。末尾输出 [ASKING:motivation]。'
@@ -779,12 +765,12 @@ export async function POST(req: Request) {
   if (!cvText.trim()) {
     const emptyResearchAndInternship = effectiveEmptyDimensions.includes('research') && effectiveEmptyDimensions.includes('internship')
     const targetDescription = emptyResearchAndInternship
-      ? '科研和实习均为空，因此需要深挖 3–4 段有效项目经历'
-      : '科研、实习、项目三类经历合计需要深挖 3–4 段'
+      ? '科研和实习均为空，需要优先从项目维度寻找有效素材'
+      : '科研、实习和项目共同构成有效经历库存'
     const countedNames = canonicalExperienceNames.length > 0
       ? canonicalExperienceNames.map((name, index) => `${index + 1}. ${name}`).join('\n')
       : '（暂无）'
-    systemPrompt += `\n\n## 【经历总量控制（服务器权威统计）】\n${targetDescription}。当前有效经历严格为 ${concreteExperienceCount} 段：\n${countedNames}\n这个数字和清单是本轮唯一有效的计数依据，你不得自行增加、改写或宣布另一个数量。学术背景中的课程、课堂案例、常规课程实验、仪器练习、知识框架与课程收获均不在清单中，绝对不能计作有效经历；只有完成深挖且属于科研、正式实习或项目的 high/medium 独立经历才可计数。少于 3 段时必须继续寻找并逐项深挖；已有 3 段时仅在用户还有明显更有价值的经历时补充第 4 段；达到 4 段后禁止再开启任何新经历，完成当前项后立即进入申请动机。不得把同一经历换标题重复计数。`
+    systemPrompt += `\n\n## 【三段有效经历目标】\n${targetDescription}。当前已完成的有效经历为 ${concreteExperienceCount} 段：\n${countedNames}\n进入申请动机前优先收集 3 段有效经历。科研、实习和首次项目清单处理完后若仍不足 3 段，只允许再进行一次综合补充盘点；用户明确没有，或该次补充仍不足 3 段，都必须接受真实库存并进入申请动机。严禁继续换类别、换措辞或拆成课程作业、学生组织、志愿活动等多轮追问。不得把同一经历换标题重复计数。`
 
     const resolvedUnavailable = (['research', 'internship'] as const)
       .filter(dimension => effectiveEmptyDimensions.includes(dimension))
@@ -793,14 +779,12 @@ export async function POST(req: Request) {
       systemPrompt += `\n\n## 【已确认无对应经历——禁止回问】\n申请者已经明确确认没有${resolvedUnavailable.join('和')}经历。此事实已经记录，不得在项目盘点、项目收尾或维度切换时再次询问是否有这些经历，也不得把它们与新问题捆绑复核。只按当前状态机任务继续。`
     }
   }
-  if (!cvText.trim() && missing[0] === 'project' && concreteExperienceCount < 3) {
+  if (!cvText.trim() && missing[0] === 'project') {
     if (pendingProjectCandidates.length > 0) {
       systemPrompt += `\n\n## 【服务器项目队列——必须按序完成】\n以下是申请者已经明确列出的待采访经历：\n${pendingProjectCandidates.map((name, index) => `${index + 1}. ${name}`).join('\n')}\n只采访队首“${pendingDiscoveredProject || pendingProjectCandidates[0]}”。队列清空前严禁询问课程作业、学生组织或其他新经历；不得丢弃后续条目。`
     }
     if (!extracurricularStageAnswered) {
       systemPrompt += `\n\n## 【项目覆盖提醒】\n先取得课程外项目清单。申请者一次声明多段时，结合申请方向“${targetMajorForRanking}”按专业相关性、复杂度、个人贡献、成果与动机价值从高到低逐段问完；不得机械按列举顺序，也不得先问课程作业。`
-    } else if (!courseProjectStageAnswered) {
-      systemPrompt += `\n\n## 【项目覆盖提醒】\n课程外高优先级项目已经确认，但有效经历数量仍不足；此时才可用毕业设计、课程设计、课程论文或大作业补足。不要重复已经回答过的问题。`
     }
   }
 
@@ -820,8 +804,11 @@ export async function POST(req: Request) {
   // been met, never stream a model response that skips project discovery for a
   // later dimension. Buffer this high-risk transition, validate its actual
   // question, retry once, then use a deterministic safe question if necessary.
-  const experienceTargetStillOpen = !isPreludeObjective && !cvText.trim() && concreteExperienceCount < 3 &&
-    ['research', 'internship', 'project'].includes(authoritativeDimension)
+  const experienceTargetStillOpen = !isPreludeObjective && !cvText.trim() &&
+    (['research', 'internship'].includes(authoritativeDimension) ||
+      (authoritativeDimension === 'project' &&
+        (!extracurricularStageAnswered || pendingProjectCandidates.length > 0 || onlyConfirmedProjectAvailability ||
+          shouldAskSupplementalProjectInventory)))
   if (response.ok && !isPreludeObjective && authoritativeDimension === 'academic') {
     let draft = await response.text()
     const isAcademicQuestion = (text: string) => {
@@ -903,7 +890,7 @@ export async function POST(req: Request) {
   } else if (response.ok && experienceTargetStillOpen) {
     const skipsToLaterDimension = (draft: string) => {
       const detected = classifyInterviewQuestion(draft)
-      return detected === 'motivation' || detected === 'plan' || detected === 'personal' ||
+      return detected === 'motivation' || detected === 'plan' ||
         /\[ASKING[：:]\s*(?:motivation|plan|personal)\]/i.test(draft)
     }
     const hasCurrentProjectContext = Boolean(
@@ -922,6 +909,29 @@ export async function POST(req: Request) {
 
     let draft = await response.text()
     const questionCount = (draft.match(/[？?]/g) || []).length
+    const projectOpeningIsBundled = (text: string) => {
+      if (!['project_open_experience', 'project_identify_experience'].includes(turnObjective)) return false
+      const question = text.match(/[^。！？!?\n]*[？?]/)?.[0] || text
+      const facets = [
+        /题目|主题|赛题|背景|是什么(?:比赛|竞赛|大赛|项目)|做什么|完成什么任务/,
+        /分工|角色|你.{0,12}(?:负责|承担|贡献|做了什么)/,
+        /困难|挑战|难点|棘手|瓶颈/,
+        /怎么|如何|解决|处理|应对|调整/,
+        /结果|成果|成绩|获奖|反馈|产出/,
+        /收获|反思|学到|意识到/,
+      ].filter(pattern => pattern.test(question)).length
+      return facets > 1
+    }
+    const projectOpeningPrematurelyDone = (text: string) =>
+      ['project_open_experience', 'project_identify_experience'].includes(turnObjective) &&
+      /\[EXP_DONE[：:]\s*[^]]+\]/i.test(text)
+    const projectInventoryWordingIsInvalid = (text: string) => {
+      if (turnObjective !== 'project_inventory') return false
+      const questionEnd = text.search(/[？?]/)
+      const leadAndQuestion = questionEnd >= 0 ? text.slice(0, questionEnd) : text
+      const leadSentenceCount = (leadAndQuestion.match(/[。！!]/g) || []).length
+      return leadSentenceCount > 1 || /哪些[^？?]{0,80}吗[？?]/.test(text)
+    }
     const mislabelsShortAnswerAsPaste = latestUserAnswer.length <= 12 &&
       /(?:重复粘贴|复制了一遍|上一条内容.{0,8}重复)/.test(draft)
     const mixesCurrentAndNextExperience = Boolean(activeExperience || pendingDiscoveredProject) &&
@@ -931,14 +941,16 @@ export async function POST(req: Request) {
       /(?:已经|这里|这段).{0,12}(?:聊得|聊到|信息).{0,8}(?:充分|完整|这里|够了)/.test(draft) &&
       /(?:接下来|再来|接着|然后)/.test(draft)
     const invalidDraft = questionCount !== 1 || (authoritativeDimension === 'project'
-      ? !asksProjectQuestion(draft) || mixesCurrentAndNextExperience || prematurelyClosesWhileAsking || mislabelsShortAnswerAsPaste
+      ? !asksProjectQuestion(draft) || mixesCurrentAndNextExperience || prematurelyClosesWhileAsking ||
+        mislabelsShortAnswerAsPaste || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
+        projectInventoryWordingIsInvalid(draft)
       : skipsToLaterDimension(draft))
     if (invalidDraft) {
       const currentHasDepth = hasDimensionDepth(authoritativeDimension, 3)
       const requiredAction = currentHasDepth
         ? '当前科研/实习已经获得充分回答，可以简短收束，但唯一的新问题必须用于发现项目经历，并输出 [ASKING:project]。'
         : `当前 ${authoritativeDimension} 尚未完成，只能继续追问这段经历的一个核心细节，并输出 [ASKING:${authoritativeDimension}]。`
-      const retryPrompt = `${systemPrompt}\n\n## 【上次生成未通过服务器校验】\n你刚才在有效经历不足三段时，越过项目补充，生成了申请动机、未来规划或个人特质问题；该结果已被拦截。${requiredAction}不得出现任何申请原因、毕业规划或个人特质问题。`
+      const retryPrompt = `${systemPrompt}\n\n## 【上次生成未通过服务器校验】\n你刚才偏离了服务器指定的当前经历任务，或在一个问题中捆绑了多个信息点；该结果已被拦截。${requiredAction}项目首问只能从项目内容、个人分工中选择一项询问，不能同时问两项；尚未收到首问回答时禁止输出 [EXP_DONE:]。不得出现任何申请原因、毕业规划或个人特质问题。`
       const retryResponse = await streamDeepSeek(
         retryPrompt,
         modelConversation,
@@ -949,15 +961,17 @@ export async function POST(req: Request) {
     const retryMixesExperiences = Boolean(activeExperience || pendingDiscoveredProject) && retryQuestionCount >= 2 &&
       /(?:接下来|再来|接着|然后).{0,24}(?:聊|听听|看看).{0,20}(?:下一|另一|那段|法律援助|课程论文|模拟法庭|项目|经历)/.test(draft)
     const retryStillInvalid = (draft.match(/[？?]/g) || []).length !== 1 || (authoritativeDimension === 'project'
-      ? !asksProjectQuestion(draft) || retryMixesExperiences
+      ? !asksProjectQuestion(draft) || retryMixesExperiences ||
+        projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
+        projectInventoryWordingIsInvalid(draft)
       : skipsToLaterDimension(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
       const introducedExperienceName = latestUserAnswer
         .split(/[：:。；;！!\n]/)[0].replace(/[\*#「」『』]/g, '').trim().slice(0, 40)
       const latestAnswerIntroducesExperience = introducedExperienceName.length >= 2 &&
-        /实习|科研|课题|论文|竞赛|比赛|项目|模拟法庭|法律援助|社会实践|志愿|社团|学生组织|课程设计|毕业设计|大作业/.test(introducedExperienceName) &&
-        !/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(introducedExperienceName) &&
+        /实习|科研|课题|论文|竞赛|比赛|大赛|项目|模拟法庭|法律援助|社会实践|志愿|社团|学生组织|课程设计|毕业设计|大作业/.test(introducedExperienceName) &&
+        !/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(introducedExperienceName) &&
         !/^(?:这|该|那)(?:篇|个|项|段).{0,30}(?:是|由|属于|完成|负责|获得|得到)/.test(introducedExperienceName) &&
         !/^(?:最|主要)?(?:棘手|困难|难点|问题|挑战|结果|收获|解决)/.test(introducedExperienceName)
       if (authoritativeDimension !== 'project' && !hasDimensionDepth(authoritativeDimension, 3)) {
@@ -965,19 +979,21 @@ export async function POST(req: Request) {
           ? `你刚提到的“${introducedExperienceName}”很值得展开。先从一个具体场景聊起：这段经历里，哪件事最需要你亲自判断或解决？\n\n[ASKING:${authoritativeDimension}]`
           : `刚才这段经历里，有没有一件最需要你亲自判断或解决的事？我们先聊这个具体场景。\n\n[ASKING:${authoritativeDimension}]`
       } else {
-        draft = latestAnswerIntroducesExperience
+        draft = turnObjective === 'project_open_experience' && turnSubject
+          ? `我们先从“${turnSubject}”说起。你在这段经历中主要负责哪一部分？\n\n[ASKING:project]`
+          : latestAnswerIntroducesExperience
           ? `你刚提到的“${introducedExperienceName}”很值得继续聊。我们先聚焦这一次经历：当时最棘手的问题是什么？\n\n[ASKING:project]`
           : onlyConfirmedProjectAvailability
           ? '好呀，那我们就从这段竞赛聊起。它具体是什么比赛，当时需要完成什么任务？你先简单介绍一下背景就好。\n\n[ASKING:project]'
+          : shouldAskSupplementalProjectInventory
+            ? '目前有效经历还不到三段，我只再确认这一次：除了已经聊过的内容，你还有一段课程项目、竞赛、实践或学生组织经历可以补充吗？没有也完全没关系。\n\n[ASKING:project]'
           : !extracurricularStageAnswered
             ? `${projectInventoryQuestion}\n\n[ASKING:project]`
-          : !courseProjectStageAnswered
-            ? '现有有效经历还不足三段。课程里是否有一项你投入较多的大作业、课程设计、课程论文或毕业设计？选最熟悉的一项聊就好，没有也没关系。\n\n[ASKING:project]'
-            : '我再从另一个角度帮你找找素材：在学生组织、社团或志愿活动里，你有没有真正负责过一件事？规模不用大，没有也没关系。\n\n[ASKING:project]'
+          : `${projectInventoryQuestion}\n\n[ASKING:project]`
       }
     }
     const validatedDimension = classifyInterviewQuestion(draft) ||
-      draft.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan|personal)\]/i)?.[1] || ''
+      draft.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan)\]/i)?.[1] || ''
     if (validatedDimension) {
       responseDimension = validatedDimension
       if (validatedDimension !== authoritativeDimension) responseObjective = `${validatedDimension}_discovery`
@@ -985,13 +1001,13 @@ export async function POST(req: Request) {
     response = new Response(draft, {
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     })
-  } else if (response.ok && ['motivation', 'plan', 'personal'].includes(authoritativeDimension)) {
+  } else if (response.ok && ['motivation', 'plan'].includes(authoritativeDimension)) {
     // The late-stage order is just as authoritative as the experience gate.
-    // Buffer these three transitions so the model cannot skip plan or ask two
+    // Buffer these transitions so the model cannot skip plan or ask two
     // dimensions in one turn merely because its prose sounds plausible.
     let draft = await response.text()
     const detectsDimension = (text: string) => classifyInterviewQuestion(text) ||
-      text.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan|personal)\]/i)?.[1] || ''
+      text.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan)\]/i)?.[1] || ''
     const violatesLateStageContract = (text: string) => {
       if ((text.match(/[？?]/g) || []).length !== 1) return true
       if (detectsDimension(text) !== authoritativeDimension) return true
@@ -1021,21 +1037,19 @@ export async function POST(req: Request) {
         ? (turnObjective === 'motivation_school'
           ? `你实际了解过目标院校或所在地区的哪些资源，其中什么最适合你想深入的方向？\n\n[ASKING:motivation]`
           : `结合刚才聊过的经历，是什么让你最终确定要继续申请这个专业或方向？\n\n[ASKING:motivation]`)
-        : authoritativeDimension === 'plan'
-          ? `读完这个硕士项目后，你希望自己的第一步是什么，先进入哪类工作或继续哪方面的研究？\n\n[ASKING:plan]`
-          : `聊到这里，我注意到你处理问题时有一种很稳定的方式。你认同我刚才对你的总结吗，或者有什么想补充、纠正的？\n\n[ASKING:personal]`
+        : `读完这个硕士项目后，你希望自己的第一步是什么，先进入哪类工作或继续哪方面的研究？\n\n[ASKING:plan]`
     }
 
     // Hidden progress tags are model output too, so validate them independently
     // from the visible question. A motivation question carrying [ASKING:plan]
-    // used to make the next school-motivation answer count as a plan answer and
-    // let the state machine jump straight to personal.
+    // used to make the next school-motivation answer count as a plan answer.
     draft = draft
       .replace(/\[ASKING[：:]\s*(?:academic|research|internship|project|motivation|plan|personal)\]/gi, '')
       .replace(/\[(COVERED|EMPTY|DEFERRED)[：:]\s*(academic|research|internship|project|motivation|plan|personal)\]/gi,
         (tag, eventType: string, dimension: string) => {
           const taggedIndex = ALL_DIMENSIONS.indexOf(dimension)
           const authoritativeIndex = ALL_DIMENSIONS.indexOf(authoritativeDimension)
+          if (taggedIndex < 0) return ''
           // The current response asks this dimension; it cannot also complete it
           // before the applicant replies. Preserve only an explicit deferral of
           // the current topic, plus valid terminal events from earlier topics.
@@ -1086,8 +1100,7 @@ export async function POST(req: Request) {
   })))
   response.headers.set(
     'X-Interview-Needs-More-Experiences',
-    String(!cvText.trim() && concreteExperienceCount < 3 && !projectDiscoveryDeclined && !lateStageStarted &&
-      ALL_DIMENSIONS.indexOf(responseDimension) <= ALL_DIMENSIONS.indexOf('project')),
+    shouldAskSupplementalProjectInventory ? 'true' : 'false',
   )
   return response
 }

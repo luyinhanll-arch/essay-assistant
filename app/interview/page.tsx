@@ -71,7 +71,7 @@ export default function InterviewPage() {
   const [refreshDimensionsNotice, setRefreshDimensionsNotice] = useState('')
 
 
-  const DIM_ORDER = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+  const DIM_ORDER = ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
 
   function getCvExperienceEntries(): Array<{ name: string; type: string }> {
     const entries: Array<{ name: string; type: string }> = []
@@ -156,8 +156,8 @@ export default function InterviewPage() {
 
   function isPostExperienceQuestion(content: string): boolean {
     if (!/[？?]/.test(content)) return false
-    if (/\[ASKING[：:]\s*(motivation|plan|personal)\]/i.test(content)) return true
-    return /为什么.*(申请|选择|深造)|申请.*(动机|原因|方向)|选择.*方向.*深造|决定.*申请|未来.*(规划|打算)|毕业后|职业.*目标|个人特质|成长.*故事|哪个具体.*(时刻|经历).*(方向|深造)/i.test(content)
+    if (/\[ASKING[：:]\s*(motivation|plan)\]/i.test(content)) return true
+    return /为什么.*(申请|选择|深造)|申请.*(动机|原因|方向)|选择.*方向.*深造|决定.*申请|未来.*(规划|打算)|毕业后|职业.*目标|哪个具体.*(时刻|经历).*(方向|深造)/i.test(content)
   }
 
   function hasAnsweredInterviewQuestion(conversation: Message[], pattern: RegExp): boolean {
@@ -305,11 +305,11 @@ export default function InterviewPage() {
       const raw = (m as Message & { rawContent?: string }).rawContent ?? m.content
       if (new RegExp(`\\[(ASKING|COVERED)[：:]\\s*${dim}\\]`, 'i').test(raw)) return i
     }
-    const LATE_DIMS = ['motivation', 'plan', 'personal']
+    const LATE_DIMS = ['motivation', 'plan']
     if (LATE_DIMS.includes(dim) && coveredDimensions.includes(dim)) {
       const aiIdxs = messages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0)
       if (aiIdxs.length > 0) {
-        const target = dim === 'motivation' ? 0.6 : dim === 'plan' ? 0.75 : 0.85
+        const target = dim === 'motivation' ? 0.65 : 0.85
         return aiIdxs[Math.floor(aiIdxs.length * target)] ?? aiIdxs[aiIdxs.length - 1]
       }
     }
@@ -317,7 +317,7 @@ export default function InterviewPage() {
   }
 
   // Public wrapper: enforces that each dim's position is strictly after the previous dim's.
-  // This prevents mis-estimates (especially for personal) from landing before earlier dims.
+  // This prevents fallback estimates from landing before earlier dimensions.
   function getDimStart(dim: string): number {
     const raw = getDimStartRaw(dim)
     const dimPos = DIM_ORDER.indexOf(dim)
@@ -539,23 +539,15 @@ export default function InterviewPage() {
     })
     const planAnswered = planStart >= 0 && messages.slice(planStart + 1)
       .some(message => message.role === 'user' && message.content.trim().length > 8)
-    const personalStart = messages.findIndex((message, index) => {
-      if (index <= planStart || message.role !== 'assistant') return false
-      const content = message.rawContent ?? message.content
-      return /[？?]/.test(content) &&
-        /个人特质|你.*核心.*特质|你自己.*(?:感觉|特点|意识到|做事风格)|有没有哪一次.*(?:成长|挑战|改变)|哪个特质.*代表你|更代表你的.*特质|是否认同.*(?:总结|观察|模式)/.test(content)
-    })
-
     if (!state.coveredDimensions.includes('project')) setCoveredDimensions(['project'])
     if (!('motivation' in state.dimensionMessageIndex)) setDimensionMessageIndex('motivation', motivationStart)
 
-    if (personalStart >= 0 && motivationAnswered && planAnswered) {
-      const completedBeforePersonal = ['motivation', 'plan'].filter(dimension =>
+    if (planStart >= 0 && motivationAnswered && planAnswered) {
+      const completedLateDimensions = ['motivation', 'plan'].filter(dimension =>
         !state.coveredDimensions.includes(dimension))
-      if (completedBeforePersonal.length > 0) setCoveredDimensions(completedBeforePersonal)
+      if (completedLateDimensions.length > 0) setCoveredDimensions(completedLateDimensions)
       if (!('plan' in state.dimensionMessageIndex)) setDimensionMessageIndex('plan', planStart)
-      if (!('personal' in state.dimensionMessageIndex)) setDimensionMessageIndex('personal', personalStart)
-      if (state.activeDimension !== 'personal') setActiveDimension('personal')
+      setActiveDimension(null)
     } else if (planStart >= 0 && motivationAnswered) {
       if (!state.coveredDimensions.includes('motivation')) setCoveredDimensions(['motivation'])
       if (!('plan' in state.dimensionMessageIndex)) setDimensionMessageIndex('plan', planStart)
@@ -908,7 +900,7 @@ export default function InterviewPage() {
             setExpMessageIndex(next, useAppStore.getState().messages.length - 1)
           }
         } else if (current && !next && (currentHasDepth || explicitlyWrappedCurrent) &&
-          (detectedAsking.some(dimension => ['motivation', 'plan', 'personal'].includes(dimension)) || isPostExperienceQuestion(fullText))) {
+          (detectedAsking.some(dimension => ['motivation', 'plan'].includes(dimension)) || isPostExperienceQuestion(fullText))) {
           completeCvExperience(current)
           setActiveExperience(null)
         }
@@ -935,20 +927,19 @@ export default function InterviewPage() {
         const askIndex = coverageHistory.findIndex(message =>
           message.role === 'assistant' &&
           new RegExp(`\\[ASKING[：:]\\s*${dimension}\\]`, 'i').test(message.rawContent ?? message.content))
-        const minimumLength = dimension === 'personal' ? 2 : 20
         return askIndex >= 0 && coverageHistory.slice(askIndex + 1)
-          .some(message => message.role === 'user' && message.content.trim().length >= minimumLength)
+          .some(message => message.role === 'user' && message.content.trim().length >= 20)
       }
       let covered = detectedCovered.filter(dimension => {
         if (!cvText && dimension === 'project' && serverNeedsMoreExperiences) return false
-        if (['project', 'internship', 'research', 'motivation', 'plan', 'personal'].includes(dimension) &&
+        if (['project', 'internship', 'research', 'motivation', 'plan'].includes(dimension) &&
             !hasDedicatedDimensionAnswer(dimension)) return false
         if (!cvText) {
           if (dimension === 'academic' && !hasCompleteAcademicBackground(coverageHistory)) return false
           if (dimension === 'motivation' && !hasCompleteMotivation(coverageHistory)) return false
           return true
         }
-        if (['motivation', 'plan', 'personal'].includes(dimension)) return pendingCvEntries.length === 0
+        if (['motivation', 'plan'].includes(dimension)) return pendingCvEntries.length === 0
         return !pendingCvEntries.some(entry => typeToDimension[entry.type] === dimension)
       })
 
@@ -999,7 +990,7 @@ export default function InterviewPage() {
           resolvedForOrder.has(previous) || hasAnsweredActiveDimension(previous))
       }
       const asking = detectedAsking.filter(dimension => {
-        if (cvText && ['motivation', 'plan', 'personal'].includes(dimension) && pendingCvEntries.length > 0) return false
+        if (cvText && ['motivation', 'plan'].includes(dimension) && pendingCvEntries.length > 0) return false
         if (!cvText && dimension === 'project' && !hasCompleteAcademicBackground(coverageHistory)) return false
         if (!cvText && dimension === 'plan' && !hasCompleteMotivation(coverageHistory)) return false
         return canStartInOrder(dimension)
@@ -1121,14 +1112,13 @@ export default function InterviewPage() {
       // dimension, inject the inferred dim so downstream NO_EXP_PATTERN / transition
       // logic stays accurate.
       if (asking.length === 0) {
-        const DIM_ORDER = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+        const DIM_ORDER = ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
         const INFER_KW: Record<string, RegExp> = {
           internship: /实习经历|有没有.*实习|聊聊.*实习|兼职/,
           research:   /科研经历|有没有.*科研|聊聊.*科研|课题组|帮.*老师.*做|实验室.*科研|科研.*实验室|发表.*论文|投稿/,
           project:    /项目经历|课程外面|课余时间.*做过|课程项目|课程设计|毕业设计|模拟法庭|法律援助|竞赛|个人项目|社会实践|公益活动|学生组织/,
           motivation: /申请动机|为什么.*申请|为什么.*出国|什么.*吸引.*你|选择.*这个.*方向|为什么.*选择|让你.*决定.*申请|什么让你.*想.*申请|吸引你的是|这个方向.*吸引|让你觉得.*吸引|对.*学校.*感兴趣|对.*专业.*感兴趣|为什么.*对.*感兴趣|让你.*对.*投入|决定.*深造|决定.*继续|是什么.*让你.*(?:决定|确定).*(?:申请|继续|方向)|什么.*让你.*最终|为什么.*要去.*读|为什么.*选.*这|对.*专业.*理解.*变化.*申请/,
           plan:       /毕业后.*[想希打做]|未来.*规划|职业.*目标|职业.*方向|长期.*打算|毕业.*之后|读完.*之后|硕士.*之后|博士.*之后|有什么.*规划|有没有.*规划|有没有.*打算|初步.*规划|初步.*想法|一年后的你|走出校门时|希望.*(?:留学|读书|项目|经历).*(?:带来|改变)/,
-          personal:   /个人特质|你.*核心.*特质|让你.*突破.*瓶颈|成长最多|你自己.*(?:感觉|特点|意识到|做事风格)|有没有哪一次.*(?:成长|挑战|改变)|你这个人|是否认同.*(?:总结|观察|模式)/,
         }
         const sInfer = useAppStore.getState()
         const curActive = sInfer.activeDimension
@@ -1236,7 +1226,7 @@ export default function InterviewPage() {
       }
 
       if (complete) {
-        const ALL_DIMENSIONS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+        const ALL_DIMENSIONS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
 
         // ── Force-cover dims that were asked + user replied but AI forgot [COVERED:] ──
         // When [INTERVIEW_COMPLETE] fires, trust that the interview is done.
@@ -1417,7 +1407,7 @@ export default function InterviewPage() {
       // Persisted server metadata is the authority for new interviews. Only
       // classify prose when older messages do not have usable metadata; otherwise
       // phrases such as “实习里的分析项目” can be recalibrated into the wrong dim.
-      const explicitLaterDimension = ['motivation', 'plan', 'personal'].includes(explicitDimension)
+      const explicitLaterDimension = ['motivation', 'plan'].includes(explicitDimension)
       const classified = (explicitLaterDimension ? explicitDimension : '') ||
         (storedDoesNotMoveBackward ? storedDimension : '') ||
         explicitDimension ||
@@ -1464,31 +1454,15 @@ export default function InterviewPage() {
     })
 
     // Calibration must reach the same terminal state as the live progress path.
-    // A genuine farewell after the applicant answered the personal-trait question
-    // completes the final dimension even when the model omitted hidden tags.
+    // A genuine farewell completes the interview once all six dimensions resolve.
     const lastAssistantIndex = recalibratedMessages.reduce((found, message, index) =>
       message.role === 'assistant' ? index : found, -1)
     const lastAssistant = lastAssistantIndex >= 0 ? recalibratedMessages[lastAssistantIndex] : null
-    const personalQuestionIndex = recalibratedMessages.reduce((found, message, index) => {
-      if (message.role !== 'assistant') return found
-      const dimension = message.questionDimension || classifyInterviewQuestion(message.content)
-      return dimension === 'personal' ? index : found
-    }, -1)
-    const personalAnswered = personalQuestionIndex >= 0 && recalibratedMessages
-      .slice(personalQuestionIndex + 1)
-      .some(message => message.role === 'user' && message.content.trim().length > 0)
-    const prerequisitesResolved = DIM_ORDER.slice(0, -1).every(dimension =>
-      covered.has(dimension) || empty.has(dimension) || deferred.has(dimension))
     const concluded = lastAssistant?.role === 'assistant' &&
       isExplicitInterviewConclusion(lastAssistant.rawContent ?? lastAssistant.content)
 
     if (concluded) {
       const terminalEvents: NonNullable<Message['progressEvents']> = []
-      if (personalAnswered && prerequisitesResolved && !covered.has('personal') && !empty.has('personal')) {
-        const event = { type: 'dimension_completed' as const, dimension: 'personal' }
-        terminalEvents.push(event)
-        applyEvent(event)
-      }
       const allResolved = DIM_ORDER.every(dimension =>
         covered.has(dimension) || empty.has(dimension) || deferred.has(dimension))
       if (!complete && allResolved) {
@@ -1686,7 +1660,7 @@ export default function InterviewPage() {
   
   // 顺序生成，避免刷新时多个长对话总结请求并发触发上游限流。
   async function generateAllSummaries(dims: string[]) {
-    const summaryOrder = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+    const summaryOrder = ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
     ;[...dims].sort((a, b) => summaryOrder.indexOf(a) - summaryOrder.indexOf(b))
       .forEach(dim => summaryQueueRef.current.add(dim))
     if (!summaryDrainPromiseRef.current) {
@@ -1711,42 +1685,6 @@ export default function InterviewPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coveredDimensions, dimensionSummaries, generatingSummaries])
 
-  // ── Auto-recover plan/motivation when personal is done ──────────────────────
-  // Runs reactively whenever coveredDimensions changes. Handles the common failure
-  // mode where AI transitions plan→personal without outputting [COVERED:plan].
-  useEffect(() => {
-    if (!coveredDimensions.includes('personal')) return
-    const toRecover = ['motivation', 'plan'].filter(
-      d => !coveredDimensions.includes(d) && !emptyDimensions.includes(d)
-    )
-    if (toRecover.length === 0) return
-    const msgs = messagesRef.current
-    const src = (m: Message) => (m as Message & { rawContent?: string }).rawContent ?? m.content
-    const PLAN_KW = /毕业后|未来.*规划|职业.*规划|长远.*规划|长远.*目标|职业.*目标|职业.*方向|未来.*打算|长期.*目标|短期.*计划|读完.*之后|硕士.*之后|博士.*之后|毕业.*之后|毕业.*打算|以后.*[想打]|将来.*[想打]|有什么.*规划|有没有.*规划|有没有.*打算|初步.*想法|初步.*规划|起到什么.*作用|能为你带来什么|希望.*带来什么/i
-    const MOTIV_KW = /为什么.*申请|为什么.*出国|申请.*动机|什么.*吸引|感兴趣.*原因|让你.*感兴趣|让你.*投入|决定.*深造|决定.*继续|是什么.*让你.*决定|什么.*让你.*最终|为什么.*要去.*读|为什么.*选.*这|吸引你的是|这个方向.*吸引/i
-    const KW: Record<string, RegExp> = { plan: PLAN_KW, motivation: MOTIV_KW }
-    const verified = toRecover.filter(dim => {
-      // Primary: [ASKING:dim] tag exists and user replied after it
-      const askIdx = msgs.findIndex(m =>
-        m.role === 'assistant' &&
-        new RegExp(`\\[ASKING[：:]\\s*${dim}\\]`, 'i').test(src(m))
-      )
-      if (askIdx >= 0) {
-        if (dim === 'motivation' && !hasCompleteMotivation(msgs)) return false
-        return msgs.slice(askIdx + 1).some(u => u.role === 'user' && u.content.trim().length > 8)
-      }
-      // Fallback: keyword match in AI message followed by substantial user reply
-      const kw = KW[dim]
-      if (!kw) return false
-      return msgs.some((m, i) =>
-        m.role === 'assistant' && kw.test(src(m)) && /[？?]/.test(src(m)) &&
-        msgs.slice(i + 1).some(u => u.role === 'user' && u.content.trim().length > 8)
-      )
-    })
-    if (verified.length > 0) useAppStore.getState().setCoveredDimensions(verified)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions, emptyDimensions])
-
   // Explicit natural-language wrap-up fallback. The interview model can produce a
   // clear farewell while forgetting [INTERVIEW_COMPLETE]. A genuine conclusion is
   // terminal on its own; coverage stays independent and may still show gaps.
@@ -1756,10 +1694,9 @@ export default function InterviewPage() {
     const lastMessage = msgs[msgs.length - 1]
     if (!lastMessage || lastMessage.role !== 'assistant') return
     const content = lastMessage.rawContent ?? lastMessage.content
-    const visibleContent = content.replace(/\[[\w:,\s|]+\]/g, '').trim()
     if (!isExplicitInterviewConclusion(content)) return
 
-    const allDimensions = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+    const allDimensions = ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
     const state = useAppStore.getState()
     const recoverable = allDimensions.filter(dimension => {
       if (state.coveredDimensions.includes(dimension) || state.emptyDimensions.includes(dimension)) return false
@@ -1778,7 +1715,6 @@ export default function InterviewPage() {
       project: /往课程外面走走|课余时间里.*做过|模拟法庭|法律援助|竞赛|个人项目|社会实践|公益活动/,
       motivation: /为什么.*(?:申请|选择)|怎么产生.*申请.*想法|申请.*(?:原因|动机)|更个人的.*原因/,
       plan: /未来.*(?:规划|打算|方向)|毕业后|读完.*之后|一年后的你|走出校门时|希望.*(?:留学|读书|项目|经历).*(?:带来|改变)/,
-      personal: /真正.*长成.*不一样的人|对.*看法.*根本性.*改变|有没有哪一次.*(?:成长|挑战)|性格或心态上成长|个人特质|你自己有没有这种感觉/,
     }
     const naturalRecoverable = cvText ? [] : allDimensions.filter(dimension => {
       if (state.coveredDimensions.includes(dimension) || state.emptyDimensions.includes(dimension)) return false
@@ -1795,28 +1731,6 @@ export default function InterviewPage() {
     })
     const dimensionsToRecover = Array.from(new Set([...recoverable, ...naturalRecoverable]))
     if (dimensionsToRecover.length > 0) setCoveredDimensions(dimensionsToRecover)
-    const recoveredState = useAppStore.getState()
-    const allResolved = allDimensions.every(dimension =>
-      recoveredState.coveredDimensions.includes(dimension) || recoveredState.emptyDimensions.includes(dimension))
-
-    // A very explicit handoff to the persona step is also terminal evidence. This
-    // covers completed conversations where the model wrote a full farewell but
-    // omitted [INTERVIEW_COMPLETE]. Require both a future-plan answer and a reply
-    // to the advisor's personal-trait synthesis so an incidental “接下来” cannot
-    // end an interview early. Missing dimension tags remain missing; we only unlock
-    // the next-step button and do not fabricate interview content.
-    const explicitPersonaHandoff = /接下来.{0,40}系统会.{0,80}(?:提炼|生成|整理).{0,30}(?:叙事|人设|方向)|接下来.{0,50}(?:选择|看看).{0,20}(?:叙事|人设)方向/i.test(visibleContent)
-    const planQuestionIndex = msgs.findIndex(message =>
-      message.role === 'assistant' && /[？?]/.test(message.rawContent ?? message.content) &&
-      /读完硕士之后|硕士毕业后|未来.{0,20}(?:规划|方向)|职业.{0,12}(?:规划|方向)/.test(message.rawContent ?? message.content))
-    const planAnswered = planQuestionIndex >= 0 && msgs.slice(planQuestionIndex + 1)
-      .some(message => message.role === 'user' && message.content.trim().length > 20)
-    const personalQuestionIndex = msgs.findIndex(message =>
-      message.role === 'assistant' && /[？?]/.test(message.rawContent ?? message.content) &&
-      /你自己怎么看.{0,20}(?:总结|归纳)|有没有.{0,12}(?:补充|纠正)|你认同.{0,12}(?:总结|归纳)|最让你不想放手/.test(message.rawContent ?? message.content))
-    const personalAnswered = personalQuestionIndex >= 0 && msgs.slice(personalQuestionIndex + 1)
-      .some(message => message.role === 'user' && message.content.trim().length > 0)
-
     setActiveDimension(null)
     setActiveExperience(null)
     applyInterviewEvents([{ type: 'interview_completed' }])
@@ -1824,29 +1738,13 @@ export default function InterviewPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length, interviewComplete, isThinking, cvText, completedExperiences])
 
-  // Recover personal only after motivation and plan are complete and the dedicated
-  // personal question marker has a substantive reply.
-  useEffect(() => {
-    if (coveredDimensions.includes('personal')) return
-    if (emptyDimensions.includes('personal')) return
-    if (!coveredDimensions.includes('motivation') || !coveredDimensions.includes('plan')) return
-    const msgs = messagesRef.current
-    const src = (m: Message) => (m as Message & { rawContent?: string }).rawContent ?? m.content
-    const askIndex = msgs.findIndex(m =>
-      m.role === 'assistant' && /\[ASKING[：:]\s*personal\]/i.test(src(m)))
-    const asked = askIndex >= 0 && msgs.slice(askIndex + 1)
-      .some(u => u.role === 'user' && u.content.trim().length > 20)
-    if (asked) useAppStore.getState().setCoveredDimensions(['personal'])
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions, emptyDimensions])
-
   // Auto-complete when all dimensions become covered/empty via background detection
   // (handles the case where AI prematurely emits [INTERVIEW_COMPLETE] before
   //  all dims are tagged, then background AI detection fills in the gaps)
   useEffect(() => {
     if (interviewComplete) return
     if (isThinking) return  // Re-run once streaming finishes.
-    const ALL_DIMENSIONS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+    const ALL_DIMENSIONS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
     const msgs = messagesRef.current
     const userTurns = msgs.filter(m => m.role === 'user').length
     if (userTurns < 8) return
@@ -1905,9 +1803,8 @@ export default function InterviewPage() {
     }
 
     const allDone = ALL_DIMENSIONS.every(d => coveredSet.has(d) || empty.includes(d))
-    // Don't complete if the last AI message ends with a question — student hasn't answered yet.
-    // This prevents triggering completion when AI asks the personal dimension question and
-    // the auto-cover logic marks it covered before the student actually responds.
+    // Don't complete if the last AI message ends with a question — the student
+    // has not answered the final dimension yet.
     const lastAiMsg = [...msgs].reverse().find(m => m.role === 'assistant')
     const lastAiText = lastAiMsg ? (lastAiMsg.rawContent ?? lastAiMsg.content) : ''
     const lastAiEndsWithQuestion = lastAiMsg && !isExplicitInterviewConclusion(lastAiText) &&
@@ -2501,7 +2398,7 @@ export default function InterviewPage() {
                     </div>
                   </div>
 
-                  {/* Non-exp dims: motivation / plan / personal with full summary */}
+                  {/* Non-experience dimensions: motivation and plan */}
                   {NON_EXP_DIMS.map((dim) => {
                     const done = coveredDimensions.includes(dim.key)
                     const isActive = !done && activeDimension === dim.key
@@ -2600,8 +2497,8 @@ export default function InterviewPage() {
               )
             })()}
 
-            {/* No-CV user: original 7-dim cards */}
-            {!cvText && ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal']
+            {/* No-CV user: six interview-dimension cards */}
+            {!cvText && ['academic', 'research', 'internship', 'project', 'motivation', 'plan']
               .map(key => INTERVIEW_DIMENSIONS.find(dim => dim.key === key))
               .filter((dim): dim is typeof INTERVIEW_DIMENSIONS[number] => !!dim)
               .map((dim) => {

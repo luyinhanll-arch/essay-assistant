@@ -23,7 +23,6 @@ export async function POST(req: Request) {
 - project：课程大作业/设计/论文、竞赛、模拟法庭、法律援助、个人项目、社团/志愿/社会实践
 - motivation：为什么申请专业、学校、地区或继续深造
 - plan：毕业后的职业、读博及长期规划
-- personal：性格、价值观、稳定行为模式或个人特质
 
 判断规则：
 1. 结合整条回复判断“话题引入 + 最终追问”，不能只看最后一句。例如先说“接下来聊模拟法庭竞赛”，再问“你负责什么角色”，属于 project。
@@ -37,7 +36,7 @@ export async function POST(req: Request) {
 ${question}
 
 只输出严格 JSON，不要代码块：
-{"dimension":"academic|research|internship|project|motivation|plan|personal|null","confidence":0到1,"evidence":"不超过40字的判断依据"}`
+{"dimension":"academic|research|internship|project|motivation|plan|null","confidence":0到1,"evidence":"不超过40字的判断依据"}`
 
     const raw = await callDeepSeek('你只输出合法 JSON。', prompt)
     const parsed = JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '').trim()) as {

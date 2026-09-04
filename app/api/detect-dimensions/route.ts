@@ -2,7 +2,7 @@ import { callDeepSeek } from '@/lib/deepseek'
 import type { Message } from '@/lib/types'
 import { extractPreScreenAvailability } from '@/lib/interview-progress'
 
-const ALL_DIMS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal'] as const
+const ALL_DIMS = ['academic', 'research', 'internship', 'project', 'motivation', 'plan'] as const
 type DimKey = typeof ALL_DIMS[number]
 
 const DIM_LABELS: Record<DimKey, string> = {
@@ -12,11 +12,10 @@ const DIM_LABELS: Record<DimKey, string> = {
   project:    '项目经历',
   motivation: '申请动机',
   plan:       '未来规划',
-  personal:   '个人特质',
 }
 
 // 每个维度的问题关键词（用于在没有 [ASKING] 标记时兜底定位）
-// research / motivation / plan / personal 使用较弱的关键词兜底，
+// research / motivation / plan 使用较弱的关键词兜底，
 // 但匹配时会额外要求消息包含问号（？/?)，防止在其他话题顺带提及时误触发。
 const DIM_QUESTION_PATTERNS: Record<DimKey, string[]> = {
   academic:   ['本科.*学校', '学的什么专业', 'gpa|成绩|绩点|排名', '毕业论文|毕设', '学术表现|学习情况'],
@@ -27,11 +26,10 @@ const DIM_QUESTION_PATTERNS: Record<DimKey, string[]> = {
   project:    ['接下来.*项目经历', '现在.*聊.*项目', '单独.*聊.*项目', '课程.*(?:项目|设计).*(?:哪|具体|介绍|讲讲)', '哪(?:一|个|项).*大作业', '课程之外.*项目|课外项目|个人项目.*(?:做过|介绍|讲讲)', '参加过.*比赛|竞赛'],
   motivation: ['什么时候.*感兴趣', '为什么.*申请|为什么想.*出来', '是什么.*让你决定', '申请.*这个.*专业|选择.*这个.*方向', '对.*方向.*感受.*变化|更确定.*想做', '为什么是.*香港|香港.*吸引'],
   plan:       ['毕业.*之后.*想|毕业后.*想', '未来.*想做|未来.*打算', '职业.*方向|职业.*目标', '未来的职业方向', '有没有想过.*规划'],
-  personal:   ['印象深刻', '成长了很多|让你成长', '改变了.*想法', '你有.*什么.*特点|发现你.*特点', '有没有意识到.*特点|你自己.*意识到'],
 }
 
-// research/motivation/plan/personal 使用"弱"关键词，匹配时须附加问号检测
-const QUESTION_MARK_REQUIRED_DIMS = new Set<DimKey>(['research', 'motivation', 'plan', 'personal'])
+// research/motivation/plan 使用"弱"关键词，匹配时须附加问号检测
+const QUESTION_MARK_REQUIRED_DIMS = new Set<DimKey>(['research', 'motivation', 'plan'])
 const messageSource = (message: Message) => message.rawContent ?? message.content
 
 /**

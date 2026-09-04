@@ -9,7 +9,6 @@ const DIM_LABELS: Record<string, string> = {
   research:   '科研经历',
   motivation: '申请动机',
   plan:       '未来规划',
-  personal:   '个人特质',
 }
 
 export async function POST(req: Request) {
@@ -34,7 +33,7 @@ export async function POST(req: Request) {
   const degree = programParts[2] || '（未指定）'
 
   const summaryText = Object.entries(summaries)
-    .filter(([, v]) => v && v.trim())
+    .filter(([key, value]) => key in DIM_LABELS && value && value.trim())
     .map(([k, v]) => `【${DIM_LABELS[k] ?? k}】\n${v.trim()}`)
     .join('\n\n')
 

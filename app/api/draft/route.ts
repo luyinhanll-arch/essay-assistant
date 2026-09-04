@@ -16,7 +16,6 @@ const DIM_LABELS: Record<string, string> = {
   research:   'Research Experience',
   motivation: 'Application Motivation',
   plan:       'Future Plans',
-  personal:   'Personal Qualities',
 }
 
 export async function POST(req: Request) {
@@ -42,7 +41,7 @@ export async function POST(req: Request) {
     .join('\n\n')
 
   const rawSummaryText = Object.entries(summaries)
-    .filter(([, v]) => v && v.trim())
+    .filter(([key, value]) => key in DIM_LABELS && value && value.trim())
     .map(([k, v]) => `[${DIM_LABELS[k] ?? k}]\n${v.trim()}`)
     .join('\n\n')
 

@@ -114,7 +114,7 @@ export default function TestPage() {
   const prevIsThinkingRef = useRef(false)
   // ──────────────────────────────────────────────────────────────────────────
 
-  const DIM_ORDER = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+  const DIM_ORDER = ['academic', 'project', 'internship', 'research', 'motivation', 'plan']
 
   function getDimStartRaw(dim: string): number {
     const formalStart = (['internship', 'research'].includes(dim))
@@ -136,11 +136,11 @@ export default function TestPage() {
       const raw = (m as Message & { rawContent?: string }).rawContent ?? m.content
       if (new RegExp(`\\[(ASKING|COVERED)[：:]\\s*${dim}\\]`, 'i').test(raw)) return i
     }
-    const LATE_DIMS = ['motivation', 'plan', 'personal']
+    const LATE_DIMS = ['motivation', 'plan']
     if (LATE_DIMS.includes(dim) && coveredDimensions.includes(dim)) {
       const aiIdxs = messages.map((m, i) => m.role === 'assistant' ? i : -1).filter(i => i >= 0)
       if (aiIdxs.length > 0) {
-        const target = dim === 'motivation' ? 0.6 : dim === 'plan' ? 0.75 : 0.85
+        const target = dim === 'motivation' ? 0.65 : 0.85
         return aiIdxs[Math.floor(aiIdxs.length * target)] ?? aiIdxs[aiIdxs.length - 1]
       }
     }
@@ -375,24 +375,13 @@ export default function TestPage() {
         }
       }
 
-      {
-        const s = useAppStore.getState()
-        const priorUserTurns = msgs.filter(m => m.role === 'user').length
-        const personalDone = covered.includes('personal') || s.coveredDimensions.includes('personal')
-        if (personalDone && priorUserTurns >= 6) {
-          const toForce = ['motivation', 'plan'].filter(d => !s.coveredDimensions.includes(d))
-          if (toForce.length > 0) s.setCoveredDimensions(toForce)
-        }
-      }
-
       if (asking.length === 0) {
-        const DIM_ORDER = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+        const DIM_ORDER = ['academic', 'project', 'internship', 'research', 'motivation', 'plan']
         const INFER_KW: Record<string, RegExp> = {
           internship: /实习经历|有没有.*实习|聊聊.*实习|兼职/,
           research:   /科研经历|有没有.*科研|聊聊.*科研|课题组|帮.*老师.*做|实验室.*科研|科研.*实验室|发表.*论文|投稿/,
           motivation: /申请动机|为什么.*申请|为什么.*出国|什么.*吸引.*你|选择.*这个.*方向|为什么.*选择|让你.*决定.*申请|什么让你.*想.*申请|吸引你的是|这个方向.*吸引|让你觉得.*吸引|对.*学校.*感兴趣|对.*专业.*感兴趣|为什么.*对.*感兴趣|让你.*对.*投入|决定.*深造|决定.*继续|是什么.*让你.*决定|什么.*让你.*最终|为什么.*要去.*读|为什么.*选.*这/,
           plan:       /毕业后.*[想希打做]|未来.*规划|职业.*目标|长期.*打算|毕业.*之后|读完.*之后|硕士.*之后|博士.*之后|有什么.*规划|有没有.*规划|有没有.*打算|初步.*规划|初步.*想法/,
-          personal:   /个人特质|你.*核心.*特质|让你.*突破.*瓶颈|成长最多|你自己.*有这种感觉|你这个人/,
         }
         const sInfer = useAppStore.getState()
         const curActive = sInfer.activeDimension
@@ -468,7 +457,7 @@ export default function TestPage() {
       }
 
       if (complete) {
-        const ALL_DIMENSIONS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+        const ALL_DIMENSIONS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan']
         {
           const s = useAppStore.getState()
           const toForce = ALL_DIMENSIONS.filter(d => {
@@ -530,7 +519,6 @@ export default function TestPage() {
       const QUESTION_KW: Record<string, RegExp> = {
         motivation: /为什么.*申请|为什么.*出国|申请.*动机|什么.*促使|驱动你|想来.*读|想出来|什么.*吸引|感兴趣.*原因|让你.*感兴趣|对.*项目.*感兴趣|为什么.*香港|香港.*吸引|什么让你.*选择|选择.*申请|让你.*决定.*申请|什么让你.*想.*申请|吸引你的是|这个方向.*吸引|让你觉得.*吸引|对.*学校.*感兴趣|对.*专业.*感兴趣|为什么.*对.*感兴趣|让你.*觉得.*这个方向|让你.*对.*投入|决定.*深造|决定.*继续|是什么.*让你.*决定|什么.*让你.*最终|为什么.*要去.*读|为什么.*选.*这/i,
         plan:       /未来规划|职业规划|毕业后.*[想希打做]|毕业.*打算|职业.*目标|职业.*方向|未来.*打算|长期.*目标|短期.*计划/i,
-        personal:   /印象深刻|让你成长|成长.*经历|改变.*想法|你.*特点|自我.*认知|你.*是.*怎样.*人|内在驱动|做事.*模式|你.*感觉.*这种|有了新的认识|认识或成长|遇到的困难.*大|结果.*不如预期|你.*核心.*特质|你身上.*特质|你这个人|最后一个问题|有没有哪一次|哪一次.*经历|哪一次.*挑战|具体的经历.*挑战|让你.*锻炼|让你.*深刻|让你.*认识|让你.*有了|连接.*能力|这种.*能力.*得到/i,
         research:   /有没有.*科研|做过.*科研|参与.*研究|加入.*实验室|帮.*老师.*课题/i,
       }
       {
@@ -572,19 +560,11 @@ export default function TestPage() {
 
       {
         const s = useAppStore.getState()
-        if (s.coveredDimensions.includes('personal')) {
-          const toForce = ['motivation', 'plan'].filter(d => !s.coveredDimensions.includes(d))
-          if (toForce.length > 0) s.setCoveredDimensions(toForce)
-        }
-      }
-
-      {
-        const s = useAppStore.getState()
         const WRAP_UP = /接下来.*系统会|系统会.*提炼.*叙事|帮你提炼.*叙事方向|接下来可以去看看.*叙事方向|祝你申请顺利|今天的访谈就到这里|信息非常充分/i
         const lastAI = [...msgs].reverse().find(m => m.role === 'assistant')
         const userReplies = msgs.filter(m => m.role === 'user').length
         if (lastAI && WRAP_UP.test(lastAI.rawContent ?? lastAI.content) && userReplies >= 8) {
-          const ALL_DIMS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+          const ALL_DIMS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan']
           const toForce = ALL_DIMS.filter(d => !s.coveredDimensions.includes(d))
           if (toForce.length > 0) s.setCoveredDimensions(toForce)
         }
@@ -642,58 +622,10 @@ export default function TestPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coveredDimensions, dimensionSummaries, generatingSummaries])
 
-  // Auto-recover plan/motivation when personal is done
-  useEffect(() => {
-    if (!coveredDimensions.includes('personal')) return
-    const toRecover = ['motivation', 'plan'].filter(
-      d => !coveredDimensions.includes(d) && !emptyDimensions.includes(d)
-    )
-    if (toRecover.length === 0) return
-    const msgs = messagesRef.current
-    const src = (m: Message) => (m as Message & { rawContent?: string }).rawContent ?? m.content
-    const PLAN_KW = /毕业后|未来.*规划|职业.*目标|职业.*方向|未来.*打算|长期.*目标|短期.*计划|读完.*之后|硕士.*之后|博士.*之后|毕业.*之后|毕业.*打算|以后.*[想打]|将来.*[想打]|有什么.*规划|有没有.*规划|有没有.*打算|初步.*想法|初步.*规划/i
-    const MOTIV_KW = /为什么.*申请|为什么.*出国|申请.*动机|什么.*吸引|感兴趣.*原因|让你.*感兴趣|让你.*投入|决定.*深造|决定.*继续|是什么.*让你.*决定|什么.*让你.*最终|为什么.*要去.*读|为什么.*选.*这|吸引你的是|这个方向.*吸引/i
-    const KW: Record<string, RegExp> = { plan: PLAN_KW, motivation: MOTIV_KW }
-    const verified = toRecover.filter(dim => {
-      const askIdx = msgs.findIndex(m =>
-        m.role === 'assistant' &&
-        new RegExp(`\\[ASKING[：:]\\s*${dim}\\]`, 'i').test(src(m))
-      )
-      if (askIdx >= 0) {
-        return msgs.slice(askIdx + 1).some(u => u.role === 'user' && u.content.trim().length > 8)
-      }
-      const kw = KW[dim]
-      if (!kw) return false
-      return msgs.some((m, i) =>
-        m.role === 'assistant' && kw.test(src(m)) && /[？?]/.test(src(m)) &&
-        msgs.slice(i + 1).some(u => u.role === 'user' && u.content.trim().length > 8)
-      )
-    })
-    if (verified.length > 0) useAppStore.getState().setCoveredDimensions(verified)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions, emptyDimensions])
-
-  // ── Auto-detect personal when plan is covered ───────────────────────────────
-  useEffect(() => {
-    if (coveredDimensions.includes('personal')) return
-    if (emptyDimensions.includes('personal')) return
-    if (!coveredDimensions.includes('plan')) return
-    const msgs = messagesRef.current
-    const src = (m: Message) => (m as Message & { rawContent?: string }).rawContent ?? m.content
-    const PERSONAL_KW = /印象深刻|让你成长|成长.*经历|改变.*想法|你.*特点|自我.*认知|你.*是.*怎样.*人|内在驱动|做事.*模式|你.*感觉.*这种|有了新的认识|认识或成长|遇到的困难.*大|结果.*不如预期|你.*核心.*特质|你身上.*特质|你这个人|最后一个问题|有没有哪一次|哪一次.*经历|哪一次.*挑战|具体的经历.*挑战|让你.*锻炼|让你.*深刻|让你.*认识|让你.*有了|连接.*能力|这种.*能力.*得到/i
-    const asked = msgs.some((m, i) =>
-      m.role === 'assistant' &&
-      PERSONAL_KW.test(src(m)) &&
-      msgs.slice(i + 1).some(u => u.role === 'user' && u.content.trim().length > 8)
-    )
-    if (asked) useAppStore.getState().setCoveredDimensions(['personal'])
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions, emptyDimensions])
-
   useEffect(() => {
     if (interviewComplete) return
     if (isThinkingRef.current) return
-    const ALL_DIMENSIONS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan', 'personal']
+    const ALL_DIMENSIONS = ['academic', 'project', 'internship', 'research', 'motivation', 'plan']
     const msgs = messagesRef.current
     const userTurns = msgs.filter(m => m.role === 'user').length
     if (userTurns < 8) return

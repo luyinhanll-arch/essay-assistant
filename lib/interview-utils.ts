@@ -9,7 +9,7 @@ import type { Message, InterviewProgressEvent } from '@/lib/types'
 import { extractPreScreenAvailability } from '@/lib/interview-progress'
 
 export const NO_CV_DIMENSION_ORDER = [
-  'academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal',
+  'academic', 'research', 'internship', 'project', 'motivation', 'plan',
 ] as const
 
 /**
@@ -137,7 +137,6 @@ export const KEYWORD_MAP: Record<string, RegExp> = {
   research:   /科研经历|做过.*科研|有没有.*科研|有没有.*发表|有没有.*论文|加入.*实验室|加入.*课题组|正式.*科研/i,
   motivation: /申请动机|为什么.*申请|为什么.*出国|申请.*原因|什么.*吸引|感兴趣.*原因|让你.*感兴趣|对.*项目.*感兴趣|为什么.*香港|香港.*吸引|什么让你.*选择|想来.*读|选择.*申请|往.*方向发展|往.*方向.*走|聊聊.*动机|聊聊.*初衷|是什么让你.*想|为什么.*想.*读|这个.*方向.*吸引|吸引你的是|为什么选择.*这个|让你.*对.*投入|决定.*深造|决定.*继续|是什么.*让你.*决定|什么.*让你.*最终|为什么.*要去.*读|为什么.*选.*这/i,
   plan:       /未来规划|职业规划|未来.*规划|毕业后.*[想希打做]|毕业.*打算|职业.*目标|职业.*方向|未来.*打算|以后.*[想打]|将来.*[想打]|长期.*目标|短期.*计划|读完.*之后|硕士.*之后|博士.*之后|毕业.*之后|有什么.*规划|有没有.*规划|有没有.*打算|初步.*想法|初步.*规划/i,
-  personal:   /个人特质|你.*是.*怎样的人|说说你这个人|关于你自己|你自己.*有这种感觉|让你.*突破.*瓶颈|成长.*多|对.*自己有了.*认识|你这个人|你.*核心.*特质|哪一次经历.*让你.*成长|让你觉得.*成长|改变了你.*看法|走出来的故事|最后一个问题|你.*身上.*特质|你.*明显.*模式|你.*明显.*特点|我发现你|聊了.*这么多.*你|你.*做事.*模式|你.*内在.*驱动|你.*一贯.*方式|你.*最深.*印象|你.*成长.*故事|让你.*印象深刻|有没有.*让你.*难忘|有没有.*成长|一件事.*改变|改变了你|有没有.*挑战|克服了什么/i,
 }
 
 /**
@@ -149,7 +148,7 @@ export const KEYWORD_MAP: Record<string, RegExp> = {
 export function findDimStartInHistory(dim: string, msgs: Message[]): number {
   // Minimum prior user turns required before a dimension's first question
   // (prevents early intro/transition messages from being matched by mistake)
-  const MIN_USER_TURNS: Record<string, number> = { motivation: 4, plan: 5, personal: 6 }
+  const MIN_USER_TURNS: Record<string, number> = { motivation: 4, plan: 5 }
   const minTurns = MIN_USER_TURNS[dim] ?? 0
 
   // Primary: explicit [ASKING:dim] marker
@@ -187,10 +186,10 @@ export function findDimStartInHistory(dim: string, msgs: Message[]): number {
     if (m.role !== 'assistant') continue
     if (!kw.test(m.content) || !/[？?]/.test(m.content)) continue
     // Skip if too many *other* dimension topics are mentioned — that's an intro/overview, not a focused question.
-    // Late-stage dims (motivation/plan/personal) naturally appear in transition sentences that recap many
+    // Late-stage dims (motivation/plan) naturally appear in transition sentences that recap many
     // earlier topics ("聊了学术、项目、实习、科研，现在来聊动机..."), so allow a higher threshold for them.
     const otherDimCount = OTHER_DIM_PATTERNS.filter(re => re.test(m.content)).length
-    const otherDimThreshold = ['motivation', 'plan', 'personal'].includes(dim) ? 6 : 3
+    const otherDimThreshold = ['motivation', 'plan'].includes(dim) ? 6 : 3
     if (otherDimCount >= otherDimThreshold) continue
     // For late-stage dims, skip matches that appear too early in the conversation.
     const priorUserTurns = msgs.slice(0, i).filter(x => x.role === 'user').length
@@ -341,7 +340,7 @@ export async function detectCoverageWithAI(msgs: Message[], options: { reconcile
       // - conf >= 0.6 from window analysis
       // This prevents false positives when keywords appear in early transition
       // messages before the AI actually starts asking about the dimension.
-      const STRICT_DIMS = new Set(['project', 'internship', 'research', 'motivation', 'plan', 'personal'])
+      const STRICT_DIMS = new Set(['project', 'internship', 'research', 'motivation', 'plan'])
       const dimMap: Record<string, number> = {}
       if (Array.isArray(data.dimensions)) {
         for (const d of data.dimensions) dimMap[d.key] = d.confidence ?? 0
@@ -532,7 +531,7 @@ export function buildInterviewProgressEvents(parsed: {
   asking: string[]
   complete: boolean
 }): InterviewProgressEvent[] {
-  const valid = new Set(['academic', 'research', 'internship', 'project', 'motivation', 'plan', 'personal'])
+  const valid = new Set(['academic', 'research', 'internship', 'project', 'motivation', 'plan'])
   const events: InterviewProgressEvent[] = []
   const resolvedThisTurn = new Set([
     ...parsed.covered.filter(dim => valid.has(dim)),
