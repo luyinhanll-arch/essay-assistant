@@ -635,11 +635,12 @@ export async function POST(req: Request) {
   }
 
   // Starting a deep dive is not completing it. Do not recover an entire research
-  // or internship dimension from a single substantive answer. Every announced
-  // experience must have its own EXP_DONE event before the queue can advance.
+  // or internship dimension from a single substantive answer. A model EXP_DONE
+  // tag is accepted only with verified evidence, while sufficiently complete
+  // evidence can also close the experience when the model forgets that tag.
   if (!cvText.trim()) {
     for (const dimension of ['research', 'internship']) {
-      const completedInDimension = Array.from(new Set(completedTaggedExperienceNames
+      const completedInDimension = Array.from(new Set(verifiedCompletedExperienceNames
         .map(normalizeName)
         .filter(name => experienceDimensionByName.get(name) === dimension)))
       const requiredCount = dimension === 'internship'
@@ -674,16 +675,6 @@ export async function POST(req: Request) {
     effectiveCoveredDimensions = accepted
   }
 
-  const hasDimensionDepth = (dimension: string, minimumUserReplies: number) => {
-    const askingIndex = messages.findIndex(message =>
-      message.role === 'assistant' &&
-      new RegExp(`\\[ASKING[：:]\\s*${dimension}\\]`, 'i').test(messageSource(message))
-    )
-    if (askingIndex < 0) return false
-    return messages.slice(askingIndex + 1)
-      .filter(message => message.role === 'user' && message.content.trim().length >= 20)
-      .length >= minimumUserReplies
-  }
   const priorExperienceDimensionReady = (dimension: 'academic' | 'research' | 'internship') =>
     (dimension === 'academic' && academicStageComplete) ||
     effectiveCoveredDimensions.includes(dimension) || effectiveEmptyDimensions.includes(dimension)
@@ -837,7 +828,7 @@ export async function POST(req: Request) {
         ? '可以从一个原理、方法、实验或设计取舍说起，再说它后来怎样影响你解决问题'
         : '可以从一个印象较深的概念、案例或任务说起，再说它后来怎样影响你理解专业问题'
   const projectInventoryQuestion = isLawApplicant
-    ? '除了正式实习和科研之外，你参加过模拟法庭、法律援助、法学竞赛、辩论、社会调研或其他法治实践吗？如果有，先简单列出名称就好。'
+    ? '除了科研和正式实习之外，你参加过模拟法庭、法律援助、法学竞赛、辩论、社会调研或其他法治实践吗？如果有，先简单列出名称就好。'
     : '课程之外，你参加过哪些与申请方向相关的竞赛、实践或自主完成的项目？如果有，先简单列出名称和大致内容就好。'
   const hasUserConfirmedApplicationSpecialization = messages.some(message =>
     message.role === 'user' && /(?:申请|目标(?:专业|项目|方向)|打算申请).{0,30}[\u4e00-\u9fa5A-Za-z]{2,12}方向/.test(message.content)
@@ -847,7 +838,7 @@ export async function POST(req: Request) {
     turnDirective = `申请者已经填写目标院校或地区“${quickInfo?.targetSchool || ''}”。先用一句话自然确认，然后只浅问：除此之外是否还有其他心仪院校、特别想去的学校或地区？不要追问原因，不要进入申请动机、学术背景或经历。`
   } else if (!cvText.trim() && !experienceAvailabilityAnswered) {
     turnObjective = 'experience_availability'
-    turnDirective = '进行正式采访前的快速预筛。只询问申请者是否有与目标方向相关的正式实习，以及是否加入实验室/课题组持续科研或发表投稿过论文。只需回答有或没有，不展开深挖。'
+    turnDirective = '进行正式采访前的快速预筛。按右栏顺序，先询问申请者是否加入实验室/课题组持续科研或发表投稿过论文，再询问是否有与目标方向相关的正式实习。两项放在同一个问题中，只需回答有或没有，不展开深挖。措辞顺序必须是“科研→实习”。'
   } else if (!cvText.trim() && missing[0] === 'academic' && !coreCoursesAnswered) {
     turnObjective = 'academic_core_courses'
     turnDirective = '正式进入学术背景。本轮只让申请者列出专业核心课程，不要同时询问最喜欢、最投入、收获最大或印象最深的课程，也不要询问课程内容或项目。'
@@ -872,6 +863,20 @@ export async function POST(req: Request) {
     turnDirective = focusCourseAnswered
       ? '继续学术背景。自然回应用户主动提到的感兴趣或印象深刻的课程，追问这些课程带来的核心知识、分析方法、思维方式或实际能力；一次只问一个核心问题，不强迫用户选定唯一一门课程。末尾输出 [ASKING:academic]。'
       : '继续学术背景。自然回应用户列出的核心课程，开放地询问其中有没有感兴趣、投入较多、收获较大或印象深刻的课程；允许用户说一门、多门或没有，不要求选出唯一代表课程，暂时不要问课程项目。末尾输出 [ASKING:academic]。'
+  } else if (!cvText.trim() && missing[0] === 'research') {
+    const researchStarted = messages.some(message =>
+      message.role === 'assistant' && message.questionDimension === 'research')
+    turnObjective = researchStarted ? 'research_follow_up' : 'research_open_experience'
+    turnDirective = researchStarted
+      ? '继续当前科研经历，只补一个最重要的研究缺口，例如个人贡献、研究方法、关键判断或结果反馈。用户在预筛中已经确认有科研，不得再次询问有没有科研，也不得切换到实习、项目或后续维度。末尾输出 [ASKING:research]。'
+      : '学术背景结束后按右栏顺序进入科研经历。用户在预筛中已经确认有一段科研，本轮直接请其介绍这段科研的研究主题或具体课题，不得再次询问有没有科研，不得同时询问实习。末尾输出 [ASKING:research]。'
+  } else if (!cvText.trim() && missing[0] === 'internship') {
+    const internshipStarted = messages.some(message =>
+      message.role === 'assistant' && message.questionDimension === 'internship')
+    turnObjective = internshipStarted ? 'internship_follow_up' : 'internship_open_experience'
+    turnDirective = internshipStarted
+      ? '继续当前实习经历，只补一个最重要的工作缺口，例如个人职责、实际难题、处理方式或结果反馈。用户在预筛中已经确认有实习，不得再次询问有没有实习，也不得回到科研或切换到项目。末尾输出 [ASKING:internship]。'
+      : '科研维度完成后按右栏顺序进入实习经历。用户在预筛中已经确认有一段实习，本轮直接询问实习单位或岗位中的一个基础信息，不得再次询问有没有实习，不得回到科研。末尾输出 [ASKING:internship]。'
   } else if (!cvText.trim() && onlyConfirmedProjectAvailability &&
       (missing[0] === 'project' || missing[0] === 'needs_more_experiences' || authoritativeDimension === 'project')) {
     turnObjective = 'project_identify_experience'
@@ -1041,7 +1046,21 @@ export async function POST(req: Request) {
       (authoritativeDimension === 'project' &&
         (!extracurricularStageAnswered || pendingProjectCandidates.length > 0 || onlyConfirmedProjectAvailability ||
           shouldAskSupplementalProjectInventory)))
-  if (response.ok && !isPreludeObjective && authoritativeDimension === 'academic') {
+  if (response.ok && turnObjective === 'experience_availability') {
+    let draft = await response.text()
+    const researchIndex = draft.search(/科研|研究|实验室|课题组|论文/)
+    const internshipIndex = draft.indexOf('实习')
+    const validAvailabilityQuestion = researchIndex >= 0 && internshipIndex > researchIndex &&
+      (draft.match(/[？?]/g) || []).length === 1
+    if (!validAvailabilityQuestion) {
+      draft = '正式采访开始前，先快速确认一下：你有没有加入实验室或课题组做过持续的科研，以及有没有与申请方向相关的正式实习？只需要分别告诉我“有”或“没有”就好。'
+    }
+    responseDimension = ''
+    responseObjective = 'experience_availability'
+    response = new Response(draft, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    })
+  } else if (response.ok && !isPreludeObjective && authoritativeDimension === 'academic') {
     let draft = await response.text()
     const isAcademicQuestion = (text: string) => {
       if ((text.match(/[？?]/g) || []).length !== 1) return false
@@ -1213,6 +1232,27 @@ export async function POST(req: Request) {
       const openedNames = Array.from(text.matchAll(/\[EXP(?!_DONE)[：:]\s*([^\]]+)\]/gi), match => match[1].trim())
       return openedNames.some(name => !isLikelyExperienceAlias(name, lockedExperienceSubject))
     }
+    const repeatsExperienceAvailability = (text: string) => experienceAvailabilityAnswered && (
+      /(?:有没有|是否有|有过).{0,30}(?:科研经历|研究经历|实验室经历|课题组经历|实习经历)/.test(text) ||
+      /(?:是否|有没有).{0,12}(?:加入|进入|参加).{0,20}(?:实验室|课题组|科研)|(?:科研经历|研究经历|实验室经历|课题组经历|实习经历).{0,16}(?:有吗|有没有|是否有)/.test(text)
+    )
+    const restartsInterview = (text: string) =>
+      /(?:正式开始前|开始之前|先快速确认|在正式聊背景之前).{0,100}(?:科研|实习)|(?:你在|目前就读).{0,80}(?:GPA|申请|目标).{0,120}(?:正式开始|先问一句)/.test(text)
+    const asksExpectedExperienceDimension = (text: string) => {
+      if (authoritativeDimension === 'research') {
+        const wronglyAsksInternship = /(?:实习.{0,30}(?:单位|公司|岗位|工作|负责|在哪里)|(?:在哪里|哪家|什么岗位).{0,20}实习)/.test(text)
+        const asksResearch = /\[ASKING[：:]\s*research\]/i.test(text) ||
+          /(?:科研|研究|实验室|课题组|论文).{0,50}(?:主题|问题|方向|方法|负责|贡献|发现|结果|反馈|做了什么)/.test(text)
+        return asksResearch && !wronglyAsksInternship
+      }
+      if (authoritativeDimension === 'internship') {
+        const wronglyAsksResearch = /(?:科研|研究|实验室|课题组|论文).{0,40}(?:主题|问题|方向|方法|负责|贡献|发现|结果)/.test(text)
+        const asksInternship = /\[ASKING[：:]\s*internship\]/i.test(text) ||
+          /实习.{0,40}(?:单位|公司|机构|岗位|职责|工作|困难|处理|结果|反馈|负责)|(?:单位|公司|机构|岗位).{0,30}实习/.test(text)
+        return asksInternship && !wronglyAsksResearch
+      }
+      return true
+    }
     const mislabelsShortAnswerAsPaste = latestUserAnswer.length <= 12 &&
       /(?:重复粘贴|复制了一遍|上一条内容.{0,8}重复)/.test(draft)
     const mischaracterizesRephrase = (text: string) => controlAction === 'rephrase' &&
@@ -1231,12 +1271,10 @@ export async function POST(req: Request) {
         mislabelsShortAnswerAsPaste || mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
-      : skipsToLaterDimension(draft) || switchesAwayFromLockedExperience(draft))
+      : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
+        !asksExpectedExperienceDimension(draft) || switchesAwayFromLockedExperience(draft))
     if (invalidDraft) {
-      const currentHasDepth = hasDimensionDepth(authoritativeDimension, 3)
-      const requiredAction = currentHasDepth
-        ? '当前科研/实习已经获得充分回答，可以简短收束，但唯一的新问题必须用于发现项目经历，并输出 [ASKING:project]。'
-        : `当前 ${authoritativeDimension} 尚未完成，只能继续追问这段经历的一个核心细节，并输出 [ASKING:${authoritativeDimension}]。`
+      const requiredAction = `当前状态机维度是 ${authoritativeDimension}，只允许提出一个属于该维度的问题，并输出 [ASKING:${authoritativeDimension}]。科研未完成时禁止进入实习；实习未完成时禁止进入项目。预筛已经回答，禁止再次询问是否有科研或实习。`
       const retryPrompt = `${systemPrompt}\n\n## 【上次生成未通过服务器校验】\n你刚才偏离了服务器指定的当前经历任务、擅自切换了项目，或在一个问题中捆绑了多个信息点；该结果已被拦截。${requiredAction}服务器指定的当前项目是“${turnSubject || '当前经历'}”，不得提问、预告或输出 [EXP:] 打开其他项目。项目首问只能从项目内容、个人分工中选择一项询问，不能同时问两项；尚未收到首问回答时禁止输出 [EXP_DONE:]。不得出现任何申请原因、毕业规划或个人特质问题。`
       const retryResponse = await streamDeepSeek(
         retryPrompt,
@@ -1252,7 +1290,8 @@ export async function POST(req: Request) {
         mischaracterizesRephrase(draft) || missesInventoryIntent(draft) || projectOpeningIsBundled(draft) || projectOpeningPrematurelyDone(draft) ||
         projectInventoryWordingIsInvalid(draft) || switchesAwayFromServerProject(draft) ||
         violatesProjectSubstate(draft) || switchesAwayFromLockedExperience(draft)
-      : skipsToLaterDimension(draft) || switchesAwayFromLockedExperience(draft))
+      : skipsToLaterDimension(draft) || repeatsExperienceAvailability(draft) || restartsInterview(draft) ||
+        !asksExpectedExperienceDimension(draft) || switchesAwayFromLockedExperience(draft))
     if (retryStillInvalid) {
       const latestUserAnswer = [...messages].reverse().find(message => message.role === 'user')?.content.trim() || ''
       const introducedExperienceName = latestUserAnswer
@@ -1262,10 +1301,18 @@ export async function POST(req: Request) {
         !/^(?:我)?有(?:过)?(?:一|二|两|三|四|几|多)?段?(?:相关的?)?(?:竞赛|比赛|大赛|个人项目|开源项目|项目|实践)(?:经历)?[了呢啊吧。！!\s]*$/.test(introducedExperienceName) &&
         !/^(?:这|该|那)(?:篇|个|项|段).{0,30}(?:是|由|属于|完成|负责|获得|得到)/.test(introducedExperienceName) &&
         !/^(?:最|主要)?(?:棘手|困难|难点|问题|挑战|结果|收获|解决)/.test(introducedExperienceName)
-      if (authoritativeDimension !== 'project' && !hasDimensionDepth(authoritativeDimension, 3)) {
-        draft = latestAnswerIntroducesExperience
-          ? `你刚提到的“${introducedExperienceName}”很值得展开。先从一个具体场景聊起：这段经历里，哪件事最需要你亲自判断或解决？\n\n[ASKING:${authoritativeDimension}]`
-          : `刚才这段经历里，有没有一件最需要你亲自判断或解决的事？我们先聊这个具体场景。\n\n[ASKING:${authoritativeDimension}]`
+      if (authoritativeDimension === 'research') {
+        const researchStarted = messages.some(message =>
+          message.role === 'assistant' && message.questionDimension === 'research')
+        draft = researchStarted
+          ? '继续聊这段科研：其中哪项工作最需要你亲自判断或解决？\n\n[ASKING:research]'
+          : '先从你提到的科研经历说起：这项研究主要围绕什么问题或课题展开？\n\n[ASKING:research]'
+      } else if (authoritativeDimension === 'internship') {
+        const internshipStarted = messages.some(message =>
+          message.role === 'assistant' && message.questionDimension === 'internship')
+        draft = internshipStarted
+          ? '继续聊这段实习：其中哪项工作最需要你亲自判断或处理？\n\n[ASKING:internship]'
+          : '科研经历聊完后，我们按顺序进入实习：你当时在哪个单位或机构、担任什么岗位？\n\n[ASKING:internship]'
       } else {
         draft = turnObjective === 'project_deep_dive_process' && turnSubject
           ? `继续说“${turnSubject}”：其中哪次关键判断或处理最值得展开，你当时具体是怎么做的？\n\n[ASKING:project]`
@@ -1297,8 +1344,10 @@ export async function POST(req: Request) {
     const validatedDimension = classifyInterviewQuestion(draft) ||
       draft.match(/\[ASKING[：:]\s*(academic|research|internship|project|motivation|plan)\]/i)?.[1] || ''
     if (validatedDimension) {
-      responseDimension = validatedDimension
-      if (validatedDimension !== authoritativeDimension) responseObjective = `${validatedDimension}_discovery`
+      responseDimension = ['research', 'internship', 'project'].includes(authoritativeDimension)
+        ? authoritativeDimension
+        : validatedDimension
+      if (responseDimension !== authoritativeDimension) responseObjective = `${responseDimension}_discovery`
     }
     response = new Response(draft, {
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
