@@ -7,7 +7,7 @@ import { useAppStore } from '@/lib/store'
 import { INTERVIEW_DIMENSIONS } from '@/lib/types'
 import type { Persona } from '@/lib/types'
 
-const EXPERIENCE_SUMMARY_SCOPE_VERSION = 'metadata-scoped-v2'
+const EXPERIENCE_SUMMARY_SCOPE_VERSION = 'metadata-scoped-v3'
 
 // ─── Persona card ─────────────────────────────────────────────────────────────
 
@@ -543,11 +543,23 @@ export default function PersonaPage() {
   const [error, setError]     = useState('')
 
   const [paragraphLoading, setParagraphLoading] = useState<Record<string, boolean>>({})
+  const [storeHydrated, setStoreHydrated] = useState(false)
+
+  useEffect(() => {
+    const persistence = useAppStore.persist
+    if (!persistence) {
+      setStoreHydrated(true)
+      return
+    }
+    if (persistence.hasHydrated()) setStoreHydrated(true)
+    return persistence.onFinishHydration(() => setStoreHydrated(true))
+  }, [])
 
   // One-time migration for summaries generated before experience Q&A was scoped
   // by authoritative dimension metadata. It repairs existing confirmation pages
   // without regenerating on every visit or overwriting later manual edits.
   useEffect(() => {
+    if (!storeHydrated) return
     const storageKey = 'essay-experience-summary-scope-version'
     if (localStorage.getItem(storageKey) === EXPERIENCE_SUMMARY_SCOPE_VERSION) return
     for (const dimension of ['research', 'internship', 'project']) {
@@ -556,7 +568,7 @@ export default function PersonaPage() {
       }
     }
     localStorage.setItem(storageKey, EXPERIENCE_SUMMARY_SCOPE_VERSION)
-  }, [setStep1Summary])
+  }, [setStep1Summary, storeHydrated])
 
   // The completed interview page may recover a dimension from direct Q&A even
   // when an older progress event omitted it. A non-empty structured summary is
@@ -892,6 +904,19 @@ export default function PersonaPage() {
     }
   }
 
+  function refreshExperienceSummaries() {
+    for (const dimension of ['research', 'internship', 'project']) {
+      if (confirmationCoveredDimensions.includes(dimension) && !emptyDimensions.includes(dimension)) {
+        setStep1Summary(dimension, '')
+      }
+    }
+    if (personas.length > 0) {
+      setPersonas([])
+      setSelectedPersona(null)
+    }
+    localStorage.setItem('essay-experience-summary-scope-version', EXPERIENCE_SUMMARY_SCOPE_VERSION)
+  }
+
   function handleContinue() {
     if (!selectedPersona) return
     router.push('/framework')
@@ -914,9 +939,18 @@ export default function PersonaPage() {
 
         <main className="max-w-3xl mx-auto px-8 py-12">
           {/* Header */}
-          <div className="mb-10">
-            <h1 className="text-xl font-semibold text-stone-900 mb-2">Omi 对你的了解</h1>
-            <p className="text-sm text-stone-400">在选择叙事方向前，先确认 Omi 是否准确理解了你的经历。如有偏差，可点击「编辑」修改。</p>
+          <div className="mb-10 flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-xl font-semibold text-stone-900 mb-2">Omi 对你的了解</h1>
+              <p className="text-sm text-stone-400">在选择叙事方向前，先确认 Omi 是否准确理解了你的经历。如有偏差，可点击「编辑」修改。</p>
+            </div>
+            <button
+              onClick={refreshExperienceSummaries}
+              disabled={Object.values(paragraphLoading).some(Boolean)}
+              className="shrink-0 text-xs text-stone-500 border border-stone-200 bg-white hover:bg-stone-50 disabled:opacity-40 px-3 py-2 rounded-lg transition-colors"
+            >
+              {Object.values(paragraphLoading).some(Boolean) ? '整理中…' : '重新整理经历'}
+            </button>
           </div>
 
           {/* academic — full width, single entry */}
