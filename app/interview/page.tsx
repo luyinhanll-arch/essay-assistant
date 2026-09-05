@@ -1534,7 +1534,6 @@ export default function InterviewPage() {
         // Rebuild exclusively from immutable server-authored progress events.
         // This is deterministic and cannot rename/reclassify experiences.
         useAppStore.getState().rebuildInterviewProgressFromMessages()
-        setRefreshDimensionsNotice('校准完成')
         const calibrated = useAppStore.getState()
         // Experience summaries can exist yet still be stale (for example, an
         // earlier model run merged two projects). Calibration must rebuild these
@@ -1543,6 +1542,7 @@ export default function InterviewPage() {
           ['research', 'internship', 'project'].includes(dimension) ||
           !calibrated.dimensionSummaries[dimension])
         if (summariesToRefresh.length > 0) await generateAllSummaries(summariesToRefresh)
+        setRefreshDimensionsNotice('校准完成')
         return
 
         /* Legacy remote audit retained temporarily for old persisted source
@@ -1910,13 +1910,36 @@ export default function InterviewPage() {
   }
   const hasDisplayedTarget = Boolean(displayedTarget.school || displayedTarget.major || displayedTarget.degree)
   // Experience counts are structural facts. Derive them from the stable live
-  // EXP/EXP_DONE catalog, never from the number of AI-written summary headings.
+  // question-subject ids. A rephrased question keeps the same id, so it cannot
+  // create a duplicate; conversely, a missing legacy EXP_DONE name cannot make
+  // an independently interviewed experience disappear after the final refresh.
   const stableExperienceCounts = (() => {
     const counts: Record<string, number> = { project: 0, internship: 0, research: 0 }
-    const seen = new Set<string>()
+    const seenSubjectIds = new Set<string>()
+    const dimensionsWithSubjectIds = new Set<string>()
+    for (let index = 0; index < messages.length; index += 1) {
+      const question = messages[index]
+      if (question.role !== 'assistant' || !question.questionSubjectId) continue
+      const dimension = question.questionDimension
+      if (!dimension || !(dimension in counts)) continue
+      const hasBoundAnswer = Boolean(question.id && messages.some(message =>
+        message.role === 'user' && message.replyToMessageId === question.id && message.content.trim()))
+      const nextMessage = messages[index + 1]
+      const hasAdjacentAnswer = nextMessage?.role === 'user' && Boolean(nextMessage.content.trim())
+      if (!hasBoundAnswer && !hasAdjacentAnswer) continue
+      seenSubjectIds.add(`${dimension}:${question.questionSubjectId}`)
+      dimensionsWithSubjectIds.add(dimension)
+    }
+    for (const key of seenSubjectIds) {
+      const dimension = key.slice(0, key.indexOf(':'))
+      if (dimension in counts) counts[dimension] += 1
+    }
+    // Per-dimension compatibility fallback for interviews created before subject
+    // ids existed. Do not mix name-based and id-based counts within one dimension.
+    const seenLegacyNames = new Set<string>()
     for (const experienceName of completedExperiences) {
       const normalized = normalizeExperienceName(experienceName)
-      if (!normalized || seen.has(normalized)) continue
+      if (!normalized || seenLegacyNames.has(normalized)) continue
       const startIndex = getExpStart(experienceName)
       if (startIndex < 0) continue
       const opening = messages[startIndex]
@@ -1926,7 +1949,8 @@ export default function InterviewPage() {
         source.match(/\[ASKING[：:]\s*(project|internship|research)\]/i)?.[1] ||
         classifyInterviewQuestion(opening.content)
       if (!dimension || !(dimension in counts)) continue
-      seen.add(normalized)
+      if (dimensionsWithSubjectIds.has(dimension)) continue
+      seenLegacyNames.add(normalized)
       counts[dimension] += 1
     }
     return counts
