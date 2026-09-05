@@ -1657,6 +1657,7 @@ export default function InterviewPage() {
           cvText: cv || '',
           cvAnalysis: cvA || '',
           structuredSummary: useAppStore.getState().dimensionSummaries[dimension] || '',
+          quickInfo: useAppStore.getState().quickInfo,
         }),
       })
 
@@ -1721,10 +1722,16 @@ export default function InterviewPage() {
 
   // 当维度被标记为完成时，自动生成AI总结
   useEffect(() => {
-    const pending = coveredDimensions.filter(dim => !dimensionSummaries[dim] && !generatingSummaries[dim])
+    const pending = coveredDimensions.filter(dim => {
+      if (generatingSummaries[dim]) return false
+      const summary = dimensionSummaries[dim] || ''
+      if (!summary) return true
+      return dim === 'academic' && Boolean(quickInfo?.school?.trim()) &&
+        /某(?:高校|大学|院校)/.test(summary)
+    })
     if (pending.length > 0) generateAllSummaries(pending)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coveredDimensions, dimensionSummaries, generatingSummaries])
+  }, [coveredDimensions, dimensionSummaries, generatingSummaries, quickInfo?.school])
 
   // Explicit natural-language wrap-up fallback. The interview model can produce a
   // clear farewell while forgetting [INTERVIEW_COMPLETE]. A genuine conclusion is

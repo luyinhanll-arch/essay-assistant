@@ -161,7 +161,17 @@ export async function POST(req: Request) {
       cvText = '',
       cvAnalysis = '',
       structuredSummary = '',
-    }: { dimension: string; messages: Message[]; format?: 'structured' | 'paragraph'; relatedSummaries?: Record<string, string>; cvText?: string; cvAnalysis?: string; structuredSummary?: string } = await req.json()
+      quickInfo = null,
+    }: {
+      dimension: string
+      messages: Message[]
+      format?: 'structured' | 'paragraph'
+      relatedSummaries?: Record<string, string>
+      cvText?: string
+      cvAnalysis?: string
+      structuredSummary?: string
+      quickInfo?: { school?: string; major?: string; gpa?: string } | null
+    } = await req.json()
 
     if (!dimension || !(dimension in DIMENSION_LABELS) || !rawMessages || !Array.isArray(rawMessages)) {
       return Response.json({ error: '缺少必要参数' }, { status: 400 })
@@ -180,6 +190,9 @@ export async function POST(req: Request) {
     const cvBlock = hasCv ? `\n\n【申请者简历原文】\n${cvText.trim()}` : ''
     const cvAnalysisBlock = hasCv && cvAnalysis?.trim()
       ? `\n\n【AI对简历的深挖分析】\n${cvAnalysis.trim()}`
+      : ''
+    const academicProfileBlock = dimension === 'academic' && quickInfo
+      ? `\n\n【用户填写的学术基本信息——最高优先级事实】\n- 就读院校：${quickInfo.school?.trim() || '未填写'}\n- 就读专业：${quickInfo.major?.trim() || '未填写'}\n- GPA：${quickInfo.gpa?.trim() || '未填写'}\n已填写的院校、专业和 GPA 必须逐字使用，不得匿名化为“某高校/某大学/某院校”，也不得自行改写。`
       : ''
 
     // Extract experience names from cvAnalysis for use as canonical section titles
@@ -339,7 +352,7 @@ ${excludeRule}- 不要泛泛而谈，不要重复，不要加额外说明
 · 你通过分析误判样本调整特征权重，将误判率从 12% 降至 7% 并已上线`
       } else {
         // 其他单条目维度（motivation/plan）：分点输出
-        userPrompt = `请根据以下访谈对话，用第二人称（"你"）分点总结申请者在【${dimensionLabel}】方面的情况。
+        userPrompt = `${academicProfileBlock}请根据以下访谈对话，用第二人称（"你"）分点总结申请者在【${dimensionLabel}】方面的情况。
 
 对话内容：
 ${conversationText}
@@ -399,7 +412,7 @@ ${excludeRule}- 不加额外说明，直接输出
 · 微信支付风控团队，实习 2 个月
 · 误判率从 12% 降至 7%`
       } else {
-        userPrompt = `请从以下对话中提取用户【${dimensionLabel}】最关键的 2-3 条信息，每条一行。
+        userPrompt = `${academicProfileBlock}请从以下对话中提取用户【${dimensionLabel}】最关键的 2-3 条信息，每条一行。
 
 对话内容：
 ${conversationText}
@@ -416,6 +429,19 @@ ${excludeRule}- 跳过没提到的内容，不写"未提及"
     let raw = await callDeepSeek(systemPrompt, userPrompt)
     raw = raw.replace(/^(总结|摘要)[：:]?\s*/i, '').replace(/^["'【]|["'】]$/g, '').trim()
     if (/^(?:#\s*)?(?:[·•・]\s*)?(?:无|暂无|没有(?:对应)?(?:经历|内容)?)[。.]?$/i.test(raw)) raw = '无'
+
+    if (dimension === 'academic' && quickInfo?.school?.trim()) {
+      const school = quickInfo.school.trim()
+      raw = raw.replace(/某(?:高校|大学|院校)/g, school)
+      if (!raw.includes(school)) {
+        const identity = [
+          `就读于${school}`,
+          quickInfo.major?.trim() ? `${quickInfo.major.trim()}专业` : '',
+          quickInfo.gpa?.trim() ? `GPA ${quickInfo.gpa.trim()}` : '',
+        ].filter(Boolean).join('，')
+        raw = `· ${identity}\n${raw}`.trim()
+      }
+    }
 
     if (dimension === 'project' && !hasCv && raw === '无') {
       raw = recoverProjectSummary(rawMessages)

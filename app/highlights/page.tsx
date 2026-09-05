@@ -532,7 +532,7 @@ export default function PersonaPage() {
     emptyDimensions, coveredDimensions, interviewComplete,
     step1Summaries, setStep1Summary,
     dimensionSummaries,
-    cvText, cvAnalysis,
+    cvText, cvAnalysis, quickInfo,
     setPersonas, setSelectedPersona, setFramework,
   } = useAppStore()
 
@@ -762,6 +762,16 @@ export default function PersonaPage() {
     .filter(d => !LAST_DIMS.includes(d) || interviewComplete)
     .join(',')
 
+  // Older summaries were generated from the academic Q&A window alone and may
+  // have lost the school supplied during onboarding. Clear that stale summary
+  // once so it is regenerated with quickInfo as an authoritative fact source.
+  useEffect(() => {
+    const academicSummary = useAppStore.getState().step1Summaries.academic || ''
+    if (quickInfo?.school?.trim() && /某(?:高校|大学|院校)/.test(academicSummary)) {
+      setStep1Summary('academic', '')
+    }
+  }, [quickInfo?.school, setStep1Summary])
+
   // Generate detailed summaries for the confirmation page.
   // Exp dims (project/internship/research) run sequentially so each can pass the
   // prior siblings' summaries as relatedSummaries to prevent cross-dim duplication.
@@ -780,7 +790,14 @@ export default function PersonaPage() {
         const res = await fetch('/api/summarize-dimension', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dimension: dim, messages, relatedSummaries, format: 'paragraph', structuredSummary }),
+          body: JSON.stringify({
+            dimension: dim,
+            messages,
+            relatedSummaries,
+            format: 'paragraph',
+            structuredSummary,
+            quickInfo: useAppStore.getState().quickInfo,
+          }),
         })
         const data = await res.json()
         if (data.summary && !useAppStore.getState().step1Summaries[dim]) {
