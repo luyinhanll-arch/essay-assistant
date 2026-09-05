@@ -612,79 +612,12 @@ export default function PersonaPage() {
     const summary = step1Summaries[dimension] || ''
     if (!MULTI_ENTRY_DIMS.includes(dimension)) return summary
 
-    // For no-CV interviews the sidebar structured summary is the canonical
-    // experience list. A detailed summary may have been generated and cached
-    // before the final experience was discovered, so merge any missing entries
-    // locally instead of showing inconsistent counts (and without resending the
-    // full interview to the summarisation service).
+    // No-CV detailed summaries are now built directly from authoritative
+    // questionSubjectId-bound answers. Never enrich them again by scanning a raw
+    // conversation range: that legacy scan ran from an internship into following
+    // projects and made a correctly regenerated result look unchanged.
     if (!cvText) {
-      const detailedSections = parseSections(summary).filter(section => section.title || section.bullets.length > 0)
-      const structuredSections = parseSections(dimensionSummaries[dimension] || '')
-        .filter(section => section.title || section.bullets.length > 0)
-      if (structuredSections.length === 0) return summary
-
-      const titleScore = (candidate: string, canonical: string) => {
-        const a = normalizeExperienceTitle(candidate)
-        const b = normalizeExperienceTitle(canonical)
-        if (!a || !b) return 0
-        if (a === b) return 1
-        if (a.includes(b) || b.includes(a)) return 0.95
-        const shorter = a.length <= b.length ? a : b
-        const longer = a.length <= b.length ? b : a
-        const pairs = Array.from({ length: Math.max(0, shorter.length - 1) }, (_, index) => shorter.slice(index, index + 2))
-        return pairs.length ? pairs.filter(pair => longer.includes(pair)).length / pairs.length : 0
-      }
-      const experienceStart = (title: string) => messages.findIndex(message =>
-        message.role === 'user' && titleScore(message.content.split(/[。；;！!\n]/)[0], title) >= 0.45)
-      const organizationToken = (title: string) => title
-        .replace(/^(?:某|一家|一段)/, '')
-        .replace(/(?:法务部|实习经历|实习|部门|公司)$/g, '')
-        .trim()
-      const rawBulletsFor = (title: string, nextTitle?: string) => {
-        const start = experienceStart(title)
-        if (start < 0) return []
-        const nextStart = nextTitle ? experienceStart(nextTitle) : -1
-        const postExperienceStart = messages.findIndex((message, index) =>
-          index > start && message.role === 'assistant' &&
-          /为什么.*(?:选择|申请).*(?:方向|专业)|未来.*(?:规划|打算)|毕业后|个人.*特质/.test(message.content))
-        const end = nextStart > start ? nextStart : postExperienceStart > start ? postExperienceStart : messages.length
-        return messages.slice(start, end)
-          .filter(message => message.role === 'user')
-          .flatMap(message => message.content.split(/[。！？\n]+/))
-          .map(text => text.trim()).filter(text => text.length >= 15)
-          .map(text => text.length > 90 ? `${text.slice(0, 90)}…` : text)
-      }
-
-      const merged = structuredSections.map((structuredSection, index) => {
-        if (!structuredSection.title) return structuredSection
-        const canonical = normalizeExperienceTitle(structuredSection.title)
-        const detailed = detailedSections.find(section => {
-          if (!section.title) return false
-          const candidate = normalizeExperienceTitle(section.title)
-          return candidate === canonical || candidate.includes(canonical) || canonical.includes(candidate)
-        })
-        const otherOrganizations = structuredSections
-          .filter((_, otherIndex) => otherIndex !== index)
-          .map(section => organizationToken(section.title || ''))
-          .filter(token => token.length >= 2)
-        const candidates = [
-          ...(detailed?.bullets || structuredSection.bullets),
-          ...rawBulletsFor(structuredSection.title, structuredSections[index + 1]?.title || undefined),
-        ].filter(bullet => !otherOrganizations.some(token => bullet.includes(token)))
-          .sort((a, b) => b.length - a.length)
-        const bullets: string[] = []
-        for (const candidate of candidates) {
-          const normalized = normalizeExperienceTitle(candidate)
-          if (bullets.some(existing => {
-            const prior = normalizeExperienceTitle(existing)
-            return prior === normalized || prior.includes(normalized) || normalized.includes(prior)
-          })) continue
-          bullets.push(candidate)
-          if (bullets.length >= 5) break
-        }
-        return { title: structuredSection.title, bullets }
-      })
-      return serializeSections(merged)
+      return summary || dimensionSummaries[dimension] || ''
     }
 
     const allowed = fixedNamesForDimension(dimension)
