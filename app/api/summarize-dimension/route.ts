@@ -302,6 +302,32 @@ export async function POST(req: Request) {
     }
     const isGenericExperienceTitle = (title: string) =>
       /^(?:商赛|项目|竞赛|比赛|实习|科研|研究)(?:项目|经历)?$/.test(title.replace(/\s+/g, ''))
+    const normalizeApplicantAnswer = (answer: string) => {
+      let text = answer
+        .replace(/\*\*/g, '')
+        .replace(/[ \t]*\n+[ \t]*/g, '；')
+        .replace(/([。！？；;])；+/g, '$1')
+        .replace(/；+([。！？])/g, '$1')
+        .replace(/；{2,}/g, '；')
+        .trim()
+
+      // Some answers begin with a fragment that only makes sense after the
+      // preceding question, e.g. “是门店付费意愿调研环节”。Restore that context.
+      text = text.replace(/^是([^。；]{2,30}?)(?:环节|部分|阶段)[。；]/, '你重点处理了$1。')
+      text = text.replace(/^最难处理的是/, '你遇到的主要难点是')
+
+      // Convert first person only at clause boundaries. A global replacement
+      // produced unnatural phrases such as “你所在的团队预设定价”.
+      text = text
+        .replace(/^我们小组/, '你所在的小组')
+        .replace(/^我们/, '你所在的团队')
+        .replace(/^我/, '你')
+        .replace(/([。；！？]\s*)我们小组/g, '$1你所在的小组')
+        .replace(/([。；！？]\s*)我们/g, '$1你所在的团队')
+        .replace(/([。；！？]\s*)我/g, '$1你')
+        .replace(/我们(?:的)?(?=[^。；！？]{0,16}(?:预设|设定|方案|模型|团队|小组))/g, '团队的')
+      return text
+    }
     const buildAnchoredFallback = () => confirmedSubjectAnchors.map((anchor, index) => {
       const structuredTitle = structuredTitles[index] || ''
       const inferredTitle = inferTitleFromAnswers(anchor.answers)
@@ -309,13 +335,7 @@ export async function POST(req: Request) {
         ? inferredTitle || anchor.name
         : structuredTitle).replace(/经历$/, '').trim()
       const answerBullets = anchor.answers
-        .map(answer => answer
-          .replace(/\*\*/g, '')
-          .replace(/\s*\n+\s*/g, '；')
-          .replace(/我们小组/g, '你所在的小组')
-          .replace(/我们/g, '你所在的团队')
-          .replace(/我/g, '你')
-          .trim())
+        .map(normalizeApplicantAnswer)
         .filter(answer => answer.length >= 4)
       const uniqueAnswers = [...new Set(answerBullets)].slice(0, format === 'paragraph' ? 5 : 2)
       const bullets = uniqueAnswers.length > 0

@@ -7,7 +7,7 @@ import { useAppStore } from '@/lib/store'
 import { INTERVIEW_DIMENSIONS } from '@/lib/types'
 import type { Persona } from '@/lib/types'
 
-const EXPERIENCE_SUMMARY_SCOPE_VERSION = 'metadata-scoped-v3'
+const EXPERIENCE_SUMMARY_SCOPE_VERSION = 'metadata-scoped-v4'
 
 // ─── Persona card ─────────────────────────────────────────────────────────────
 
@@ -543,6 +543,8 @@ export default function PersonaPage() {
   const [error, setError]     = useState('')
 
   const [paragraphLoading, setParagraphLoading] = useState<Record<string, boolean>>({})
+  const [refreshingExperiences, setRefreshingExperiences] = useState(false)
+  const [experienceRefreshNotice, setExperienceRefreshNotice] = useState('')
   const [storeHydrated, setStoreHydrated] = useState(false)
 
   useEffect(() => {
@@ -758,6 +760,8 @@ export default function PersonaPage() {
             format: 'paragraph',
             structuredSummary,
             quickInfo: useAppStore.getState().quickInfo,
+            cvText: useAppStore.getState().cvText,
+            cvAnalysis: useAppStore.getState().cvAnalysis,
           }),
         })
         const data = await res.json()
@@ -837,17 +841,53 @@ export default function PersonaPage() {
     }
   }
 
-  function refreshExperienceSummaries() {
-    for (const dimension of ['research', 'internship', 'project']) {
-      if (confirmationCoveredDimensions.includes(dimension) && !emptyDimensions.includes(dimension)) {
-        setStep1Summary(dimension, '')
+  async function refreshExperienceSummaries() {
+    if (refreshingExperiences) return
+    const dimensions = ['research', 'internship', 'project'].filter(dimension =>
+      confirmationCoveredDimensions.includes(dimension) && !emptyDimensions.includes(dimension))
+    if (dimensions.length === 0) {
+      setExperienceRefreshNotice('没有需要重新整理的经历')
+      return
+    }
+
+    setRefreshingExperiences(true)
+    setExperienceRefreshNotice('正在重新整理…')
+    try {
+      const refreshed: Record<string, string> = {}
+      for (const dimension of dimensions) {
+        const response = await fetch('/api/summarize-dimension', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dimension,
+            messages: useAppStore.getState().messages,
+            format: 'paragraph',
+            structuredSummary: useAppStore.getState().dimensionSummaries[dimension] || '',
+            quickInfo: useAppStore.getState().quickInfo,
+            cvText: useAppStore.getState().cvText,
+            cvAnalysis: useAppStore.getState().cvAnalysis,
+          }),
+        })
+        const data = await response.json().catch(() => ({})) as { summary?: string; error?: string }
+        if (!response.ok || !data.summary) {
+          throw new Error(data.error || `${dimension} 整理失败`)
+        }
+        refreshed[dimension] = data.summary
       }
+      for (const [dimension, summary] of Object.entries(refreshed)) {
+        setStep1Summary(dimension, summary)
+      }
+      if (personas.length > 0) {
+        setPersonas([])
+        setSelectedPersona(null)
+      }
+      localStorage.setItem('essay-experience-summary-scope-version', EXPERIENCE_SUMMARY_SCOPE_VERSION)
+      setExperienceRefreshNotice('已重新整理')
+    } catch (error) {
+      setExperienceRefreshNotice(error instanceof Error ? `重新整理失败：${error.message}` : '重新整理失败')
+    } finally {
+      setRefreshingExperiences(false)
     }
-    if (personas.length > 0) {
-      setPersonas([])
-      setSelectedPersona(null)
-    }
-    localStorage.setItem('essay-experience-summary-scope-version', EXPERIENCE_SUMMARY_SCOPE_VERSION)
   }
 
   function handleContinue() {
@@ -877,13 +917,20 @@ export default function PersonaPage() {
               <h1 className="text-xl font-semibold text-stone-900 mb-2">Omi 对你的了解</h1>
               <p className="text-sm text-stone-400">在选择叙事方向前，先确认 Omi 是否准确理解了你的经历。如有偏差，可点击「编辑」修改。</p>
             </div>
-            <button
-              onClick={refreshExperienceSummaries}
-              disabled={Object.values(paragraphLoading).some(Boolean)}
-              className="shrink-0 text-xs text-stone-500 border border-stone-200 bg-white hover:bg-stone-50 disabled:opacity-40 px-3 py-2 rounded-lg transition-colors"
-            >
-              {Object.values(paragraphLoading).some(Boolean) ? '整理中…' : '重新整理经历'}
-            </button>
+            <div className="shrink-0 flex flex-col items-end gap-1.5">
+              <button
+                onClick={refreshExperienceSummaries}
+                disabled={refreshingExperiences || Object.values(paragraphLoading).some(Boolean)}
+                className="text-xs text-stone-500 border border-stone-200 bg-white hover:bg-stone-50 disabled:opacity-40 px-3 py-2 rounded-lg transition-colors"
+              >
+                {refreshingExperiences || Object.values(paragraphLoading).some(Boolean) ? '整理中…' : '重新整理经历'}
+              </button>
+              {experienceRefreshNotice && (
+                <span className={`text-[11px] ${experienceRefreshNotice.startsWith('重新整理失败') ? 'text-red-500' : 'text-stone-400'}`}>
+                  {experienceRefreshNotice}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* academic — full width, single entry */}
