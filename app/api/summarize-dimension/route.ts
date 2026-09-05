@@ -210,6 +210,54 @@ export async function POST(req: Request) {
       ? `\n\n【系统固定清单】以下是本维度必须输出的全部经历。**每一项都必须出现且只能出现一次**，标题必须逐字使用清单名称，不得遗漏、改名或合并：\n${requiredCvEntryNames.map(n => `- # ${n}`).join('\n')}`
       : ''
 
+    // In no-CV interviews, the server state machine assigns one immutable id to
+    // every experience being interviewed. Use those ids as the source of truth
+    // for entry count; an LLM may polish names and wording, but must not merge two
+    // independently queued experiences merely because their themes are similar.
+    const directAnswerFor = (questionIndex: number) => {
+      const question = rawMessages[questionIndex]
+      if (question?.id) {
+        const boundAnswer = rawMessages.find(message =>
+          message.role === 'user' && message.replyToMessageId === question.id)
+        if (boundAnswer?.content.trim()) return boundAnswer.content.trim()
+      }
+      const nextMessage = rawMessages[questionIndex + 1]
+      return nextMessage?.role === 'user' ? nextMessage.content.trim() : ''
+    }
+    const subjectAnchors = new Map<string, { name: string; answers: string[] }>()
+    if (!hasCv && ['project', 'internship', 'research'].includes(dimension)) {
+      rawMessages.forEach((message, index) => {
+        if (message.role !== 'assistant' ||
+            message.questionDimension !== dimension ||
+            !message.questionSubjectId ||
+            !message.questionSubject?.trim()) return
+        const answer = directAnswerFor(index)
+        const existing = subjectAnchors.get(message.questionSubjectId) || {
+          name: message.questionSubject.trim(),
+          answers: [],
+        }
+        if (answer && !existing.answers.includes(answer)) existing.answers.push(answer)
+        subjectAnchors.set(message.questionSubjectId, existing)
+      })
+    }
+    const confirmedSubjectAnchors = [...subjectAnchors.entries()]
+      .filter(([, anchor]) => anchor.answers.length > 0)
+      .map(([id, anchor]) => ({ id, ...anchor }))
+    const messageNamesBlock = confirmedSubjectAnchors.length > 0
+      ? `\n\n【状态机确认的独立经历清单】以下每个 ID 都代表一段不同经历。必须按顺序各输出一组，不得因为类型、主题或能力相似而合并；标题可根据对话补充得更准确：\n${confirmedSubjectAnchors.map((anchor, index) => `${index + 1}. ${anchor.name}（ID: ${anchor.id}）`).join('\n')}`
+      : ''
+    const buildAnchoredFallback = () => confirmedSubjectAnchors.map(anchor => {
+      const sentences = anchor.answers
+        .flatMap(answer => answer.split(/[。！？\n]+/))
+        .map(sentence => sentence.trim())
+        .filter(sentence => sentence.length >= 8)
+      const uniqueSentences = [...new Set(sentences)].slice(0, format === 'paragraph' ? 4 : 2)
+      const bullets = uniqueSentences.length > 0
+        ? uniqueSentences.map(sentence => `· ${sentence.replace(/^我/, '你').slice(0, format === 'paragraph' ? 70 : 48)}`)
+        : ['· 已在访谈中完成该经历的相关讨论']
+      return `# ${anchor.name.slice(0, 24)}\n${bullets.join('\n')}`
+    }).join('\n\n')
+
     let systemPrompt: string
     let userPrompt: string
 
@@ -264,7 +312,7 @@ export async function POST(req: Request) {
         const anchorBlock = structuredTitles.length > 0
           ? `【已识别的经历清单——必须全部覆盖】以下经历已在访谈中被识别，**每一条都必须出现在输出中**，不得遗漏：\n${structuredTitles.map(t => `- ${t}`).join('\n')}\n\n`
           : ''
-        userPrompt = `${cvContext}${anchorBlock}请扫描以下完整访谈对话（包括所有话题），找出申请者在【${dimensionLabel}】方面**曾经提到过的所有经历**——无论是在正式讨论该话题时提及的，还是在其他话题中顺带提及的。
+        userPrompt = `${cvContext}${anchorBlock}${messageNamesBlock}请扫描以下完整访谈对话（包括所有话题），找出申请者在【${dimensionLabel}】方面**曾经提到过的所有经历**——无论是在正式讨论该话题时提及的，还是在其他话题中顺带提及的。
 ${claimedBlock ? `\n${claimedBlock}\n` : ''}
 对话内容：
 ${conversationText}
@@ -326,7 +374,7 @@ ${excludeRule}- 不要泛泛而谈，不要重复，不要加标题或额外说�
         const cvContext = hasCv
           ? `申请者已提供简历（见下方），访谈对各经历进行了深挖。请综合两者，以访谈细节为主，简历信息为辅。${cvBlock}${cvAnalysisBlock}${cvNamesBlock}\n\n`
           : ''
-        userPrompt = `${cvContext}请扫描以下完整访谈对话（包括所有话题），找出用户在【${dimensionLabel}】方面**曾经提到过的所有经历**，每段单独成组。
+        userPrompt = `${cvContext}${messageNamesBlock}请扫描以下完整访谈对话（包括所有话题），找出用户在【${dimensionLabel}】方面**曾经提到过的所有经历**，每段单独成组。
 ${claimedBlock ? `\n${claimedBlock}\n` : ''}
 对话内容：
 ${conversationText}
@@ -379,6 +427,11 @@ ${excludeRule}- 跳过没提到的内容，不写"未提及"
       raw = removeCourseOnlyProjectSections(raw, rawMessages)
     }
 
+    const anchoredMinimumCount = confirmedSubjectAnchors.length
+    if (anchoredMinimumCount > 0 && (raw.match(/^# /gm) || []).length < anchoredMinimumCount) {
+      raw = buildAnchoredFallback()
+    }
+
     // For multi-entry dims: run a dedicated dedup pass so that the same experience
     // mentioned with different names at different points in the conversation is
     // always merged into one section.
@@ -406,7 +459,8 @@ ${raw}
         const dedupedCount = (cleanedDeduped.match(/^# /gm) || []).length
         // A thematic link is not duplication. If the model collapses most of the
         // independent activities, keep the original exhaustive extraction.
-        if (dedupedCount >= Math.ceil(sectionCount / 2)) raw = cleanedDeduped
+        const minimumDedupedCount = Math.max(Math.ceil(sectionCount / 2), anchoredMinimumCount)
+        if (dedupedCount >= minimumDedupedCount) raw = cleanedDeduped
       } catch {
         // dedup failed — use original
       }

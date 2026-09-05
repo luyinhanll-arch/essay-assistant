@@ -1536,9 +1536,13 @@ export default function InterviewPage() {
         useAppStore.getState().rebuildInterviewProgressFromMessages()
         setRefreshDimensionsNotice('校准完成')
         const calibrated = useAppStore.getState()
-        const missingSummaries = calibrated.coveredDimensions.filter(dimension =>
+        // Experience summaries can exist yet still be stale (for example, an
+        // earlier model run merged two projects). Calibration must rebuild these
+        // from stable message metadata, not only fill entirely missing summaries.
+        const summariesToRefresh = calibrated.coveredDimensions.filter(dimension =>
+          ['research', 'internship', 'project'].includes(dimension) ||
           !calibrated.dimensionSummaries[dimension])
-        if (missingSummaries.length > 0) await generateAllSummaries(missingSummaries)
+        if (summariesToRefresh.length > 0) await generateAllSummaries(summariesToRefresh)
         return
 
         /* Legacy remote audit retained temporarily for old persisted source
@@ -1652,6 +1656,7 @@ export default function InterviewPage() {
           messages: useAppStore.getState().messages,
           cvText: cv || '',
           cvAnalysis: cvA || '',
+          structuredSummary: useAppStore.getState().dimensionSummaries[dimension] || '',
         }),
       })
 
