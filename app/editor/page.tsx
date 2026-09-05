@@ -85,6 +85,7 @@ function EditorContent() {
   const [copied, setCopied] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const generatedRef = useRef(false)
 
   // Bilingual state
@@ -510,6 +511,10 @@ function EditorContent() {
   async function handleSave() {
     if (!text || saving) return
     setSaving(true)
+    setSaveError('')
+    // The editor already persists drafts locally. Commit the latest textarea
+    // value before attempting cloud storage so a network outage cannot lose it.
+    setDraft(text)
     try {
       // Parse school/program/degree from targetProgram ("School | Program | Degree")
       const parts = targetProgram.split('|').map(s => s.trim())
@@ -529,8 +534,9 @@ function EditorContent() {
       setSaveSuccess(true)
       setTimeout(() => setSaveSuccess(false), 2500)
     } catch (err) {
-      console.error(err)
-      alert('保存失败：' + (err instanceof Error ? err.message : String(err)))
+      const detail = err instanceof Error ? err.message : String(err)
+      console.warn('[editor] cloud save failed:', detail)
+      setSaveError(`${detail}；当前文书已保存在本机草稿中`)
     } finally {
       setSaving(false)
     }
@@ -699,6 +705,11 @@ function EditorContent() {
         </div>
         <div className="flex items-center gap-3">
           <WordCount text={text} />
+          {saveError && (
+            <span className="max-w-56 text-xs text-red-500 leading-tight" title={saveError}>
+              云端保存失败，本机草稿已保留
+            </span>
+          )}
           <button
             onClick={handleSave}
             disabled={!text || generating || saving}
