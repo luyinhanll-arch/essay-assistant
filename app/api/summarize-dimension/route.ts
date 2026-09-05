@@ -25,9 +25,8 @@ const PARAGRAPH_FOCUS: Record<string, string> = {
  * Determine which messages to use for summarising a dimension.
  *
  * Multi-entry dimensions (project / internship / research):
- *   Use the FULL conversation so that experiences mentioned in passing during
- *   other sections are not missed.  The per-dimension exclusion rules in the
- *   prompt prevent cross-contamination.
+ *   This is the legacy fallback for interviews without authoritative question
+ *   metadata. Protocol-v2 conversations use metadata-bound Q&A instead.
  *
  * Single-entry dimensions (academic / motivation / plan):
  *   Slice to the dedicated Q&A window to avoid polluting the summary with
@@ -79,6 +78,34 @@ function extractDimWindow(messages: Message[], dim: string): Message[] {
     }
   }
   return messages.slice(start, end)
+}
+
+/**
+ * Protocol-v2 questions carry their authoritative dimension. For experience
+ * summaries, pair only those questions with their direct applicant answers.
+ * This prevents later motivation/plan answers—or a neighbouring experience
+ * dimension—from being copied into the wrong confirmation card.
+ */
+function extractMetadataBoundExperienceWindow(messages: Message[], dim: string): Message[] {
+  if (!['project', 'internship', 'research'].includes(dim)) return []
+  const selected = new Map<number, Message>()
+  messages.forEach((question, questionIndex) => {
+    if (question.role !== 'assistant' || question.questionDimension !== dim) return
+    let answerIndex = -1
+    if (question.id) {
+      answerIndex = messages.findIndex(message =>
+        message.role === 'user' && message.replyToMessageId === question.id)
+    }
+    if (answerIndex < 0 && messages[questionIndex + 1]?.role === 'user') {
+      answerIndex = questionIndex + 1
+    }
+    if (answerIndex < 0 || !messages[answerIndex].content.trim()) return
+    selected.set(questionIndex, question)
+    selected.set(answerIndex, messages[answerIndex])
+  })
+  return [...selected.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, message]) => message)
 }
 
 function escapeRegExp(value: string): string {
@@ -177,8 +204,12 @@ export async function POST(req: Request) {
       return Response.json({ error: '缺少必要参数' }, { status: 400 })
     }
 
-    // Use only the relevant Q&A window so the AI doesn't confuse content across dimensions
-    const messages = extractDimWindow(rawMessages, dimension)
+    // Prefer authoritative question metadata when available. Older interviews
+    // without metadata retain the legacy conversation-window fallback.
+    const metadataBoundMessages = extractMetadataBoundExperienceWindow(rawMessages, dimension)
+    const messages = metadataBoundMessages.length > 0
+      ? metadataBoundMessages
+      : extractDimWindow(rawMessages, dimension)
 
     const dimensionLabel = DIMENSION_LABELS[dimension] || dimension
     const conversationText = messages
@@ -256,20 +287,50 @@ export async function POST(req: Request) {
     const confirmedSubjectAnchors = [...subjectAnchors.entries()]
       .filter(([, anchor]) => anchor.answers.length > 0)
       .map(([id, anchor]) => ({ id, ...anchor }))
+    const structuredTitles = structuredSummary
+      ? structuredSummary.split('\n')
+          .filter(line => line.startsWith('# '))
+          .map(line => line.slice(2).trim())
+          .filter(Boolean)
+      : []
     const messageNamesBlock = confirmedSubjectAnchors.length > 0
       ? `\n\n【状态机确认的独立经历清单】以下每个 ID 都代表一段不同经历。必须按顺序各输出一组，不得因为类型、主题或能力相似而合并；标题可根据对话补充得更准确：\n${confirmedSubjectAnchors.map((anchor, index) => `${index + 1}. ${anchor.name}（ID: ${anchor.id}）`).join('\n')}`
       : ''
-    const buildAnchoredFallback = () => confirmedSubjectAnchors.map(anchor => {
-      const sentences = anchor.answers
-        .flatMap(answer => answer.split(/[。！？\n]+/))
-        .map(sentence => sentence.trim())
-        .filter(sentence => sentence.length >= 8)
-      const uniqueSentences = [...new Set(sentences)].slice(0, format === 'paragraph' ? 4 : 2)
-      const bullets = uniqueSentences.length > 0
-        ? uniqueSentences.map(sentence => `· ${sentence.replace(/^我/, '你').slice(0, format === 'paragraph' ? 70 : 48)}`)
+    const inferTitleFromAnswers = (answers: string[]) => {
+      const text = answers.join('\n').replace(/[“”「」『』]/g, '')
+      return text.match(/(?:参加|参赛|参与)(?:了|过)?\s*([^，。；\n]{2,28}?(?:大赛|竞赛|比赛))/)?.[1]?.trim() || ''
+    }
+    const isGenericExperienceTitle = (title: string) =>
+      /^(?:商赛|项目|竞赛|比赛|实习|科研|研究)(?:项目|经历)?$/.test(title.replace(/\s+/g, ''))
+    const buildAnchoredFallback = () => confirmedSubjectAnchors.map((anchor, index) => {
+      const structuredTitle = structuredTitles[index] || ''
+      const inferredTitle = inferTitleFromAnswers(anchor.answers)
+      const title = (!structuredTitle || isGenericExperienceTitle(structuredTitle)
+        ? inferredTitle || anchor.name
+        : structuredTitle).replace(/经历$/, '').trim()
+      const answerBullets = anchor.answers
+        .map(answer => answer
+          .replace(/\*\*/g, '')
+          .replace(/\s*\n+\s*/g, '；')
+          .replace(/我们小组/g, '你所在的小组')
+          .replace(/我们/g, '你所在的团队')
+          .replace(/我/g, '你')
+          .trim())
+        .filter(answer => answer.length >= 4)
+      const uniqueAnswers = [...new Set(answerBullets)].slice(0, format === 'paragraph' ? 5 : 2)
+      const bullets = uniqueAnswers.length > 0
+        ? uniqueAnswers.map(answer => `· ${answer}`)
         : ['· 已在访谈中完成该经历的相关讨论']
-      return `# ${anchor.name.slice(0, 24)}\n${bullets.join('\n')}`
+      return `# ${title.slice(0, 36)}\n${bullets.join('\n')}`
     }).join('\n\n')
+
+    // For no-CV confirmation summaries, message metadata already gives us an
+    // exact experience-to-answer mapping. Serialize those answers directly so
+    // the model cannot borrow facts from another dimension or invent methods,
+    // feedback and reflections that the applicant never stated.
+    if (format === 'paragraph' && !hasCv && confirmedSubjectAnchors.length > 0) {
+      return Response.json({ summary: buildAnchoredFallback() })
+    }
 
     let systemPrompt: string
     let userPrompt: string
@@ -278,9 +339,9 @@ export async function POST(req: Request) {
     const DIM_EXCLUDE: Record<string, string> = {
       academic:   '**不要**包含任何可独立讲述的项目经历（课程作业、课程项目、课程设计、课程论文、毕业论文/毕业设计、个人项目、竞赛等）；只包含学校、专业、学术成绩、核心课程，以及课程带来的知识、方法、能力与收获。课堂中的常规课程实验、仪器练习和课程实操属于课程能力，应保留在学术背景，但不得另建项目标题',
       motivation: '**不要**包含对具体项目或经历的描述——这些有独立维度；只包含申请动机本身（为什么选这个专业/学校/国家，触发申请的契机）',
-      project:    '**包含**：具有独立目标、个人任务、实施过程和可辨识产出的课程作业/课程项目、课程设计、普通毕业设计、个人项目、竞赛/比赛、学生组织或志愿活动。**课程名称、课堂案例、常规课程实验、仪器练习、课程实操，以及课程带来的知识/方法/技能本身不是项目，绝对不能单独成组**。**不要**包含：实习、任何已发表或投稿的论文、依托正式实验室/课题组的研究、正式科研课题；同一论文或科研课题即使在项目话题中再次提到，也只能归入科研经历一次',
-      internship: '**不要**包含课程项目、个人项目、竞赛等非实习内容，也不要包含科研课题或学术论文。**特别注意**：导师横向课题、纵向课题、实验室科研项目等属于科研经历，**绝对不能**归入实习经历，即使是在实习期间参与的',
-      research:   '**包含**：正式加入导师实验室/课题组并持续参与的科研课题、发表或投稿的学术论文，以及依托正式实验室/课题组并形成论文或投稿的毕设。**不要**包含：普通毕业设计、课程作业/课程项目（无发表）、竞赛、社团活动、实习岗位本身',
+      project:    '**包含**：具有独立目标、个人任务、实施过程和可辨识产出的课程作业/课程项目、课程设计、普通毕业设计、个人项目、竞赛/比赛、学生组织或志愿活动。**课程名称、课堂案例、常规课程实验、仪器练习、课程实操，以及课程带来的知识/方法/技能本身不是项目，绝对不能单独成组**。**不要**包含：实习、任何已发表或投稿的论文、依托正式实验室/课题组的研究、正式科研课题、申请理由、读研目标或毕业后的职业规划；同一论文或科研课题即使在项目话题中再次提到，也只能归入科研经历一次',
+      internship: '**不要**包含课程项目、个人项目、竞赛等非实习内容，也不要包含科研课题、学术论文、申请理由、读研目标或毕业后的职业规划。**特别注意**：导师横向课题、纵向课题、实验室科研项目等属于科研经历，**绝对不能**归入实习经历，即使是在实习期间参与的',
+      research:   '**包含**：正式加入导师实验室/课题组并持续参与的科研课题、发表或投稿的学术论文，以及依托正式实验室/课题组并形成论文或投稿的毕设。**不要**包含：普通毕业设计、课程作业/课程项目（无发表）、竞赛、社团活动、实习岗位本身、申请理由、读研目标或毕业后的职业规划',
     }
     const excludeRule = DIM_EXCLUDE[dimension] ? `- ${DIM_EXCLUDE[dimension]}\n` : ''
 
@@ -319,9 +380,6 @@ export async function POST(req: Request) {
           ? `申请者已提供简历，其中包含经历的基本信息；访谈对话则提供了更深入的细节。请综合两者进行总结，以访谈中的深挖内容为主，简历信息作为补充。${cvBlock}${cvAnalysisBlock}${cvNamesBlock}\n\n`
           : ''
         // If the sidebar already identified experiences in structured format, anchor to that list
-        const structuredTitles = structuredSummary
-          ? structuredSummary.split('\n').filter(l => l.startsWith('# ')).map(l => l.slice(2).trim()).filter(Boolean)
-          : []
         const anchorBlock = structuredTitles.length > 0
           ? `【已识别的经历清单——必须全部覆盖】以下经历已在访谈中被识别，**每一条都必须出现在输出中**，不得遗漏：\n${structuredTitles.map(t => `- ${t}`).join('\n')}\n\n`
           : ''

@@ -7,6 +7,8 @@ import { useAppStore } from '@/lib/store'
 import { INTERVIEW_DIMENSIONS } from '@/lib/types'
 import type { Persona } from '@/lib/types'
 
+const EXPERIENCE_SUMMARY_SCOPE_VERSION = 'metadata-scoped-v2'
+
 // ─── Persona card ─────────────────────────────────────────────────────────────
 
 const PERSONA_COLORS = ['violet', 'indigo', 'purple'] as const
@@ -541,6 +543,20 @@ export default function PersonaPage() {
   const [error, setError]     = useState('')
 
   const [paragraphLoading, setParagraphLoading] = useState<Record<string, boolean>>({})
+
+  // One-time migration for summaries generated before experience Q&A was scoped
+  // by authoritative dimension metadata. It repairs existing confirmation pages
+  // without regenerating on every visit or overwriting later manual edits.
+  useEffect(() => {
+    const storageKey = 'essay-experience-summary-scope-version'
+    if (localStorage.getItem(storageKey) === EXPERIENCE_SUMMARY_SCOPE_VERSION) return
+    for (const dimension of ['research', 'internship', 'project']) {
+      if (useAppStore.getState().step1Summaries[dimension]) {
+        setStep1Summary(dimension, '')
+      }
+    }
+    localStorage.setItem(storageKey, EXPERIENCE_SUMMARY_SCOPE_VERSION)
+  }, [setStep1Summary])
 
   // The completed interview page may recover a dimension from direct Q&A even
   // when an older progress event omitted it. A non-empty structured summary is
