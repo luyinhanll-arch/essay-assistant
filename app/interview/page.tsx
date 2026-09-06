@@ -98,6 +98,30 @@ export default function InterviewPage() {
     return name.toLowerCase().replace(/[\s\-_*"“”'‘’「」【】《》()（）]/g, '')
   }
 
+  function compactCvSidebarBullet(value: string, maxLength = 32) {
+    const cleaned = value
+      .replace(/^[·•]\s*/, '')
+      .replace(/\.{3,}|…+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (cleaned.length <= maxLength) return cleaned.replace(/[；。]+$/, '')
+
+    // Prefer a complete sentence or clause. This keeps legacy CV summaries
+    // readable without displaying a mechanically truncated sentence.
+    const clauses = cleaned.split(/[；。！？]+/).map(part => part.trim()).filter(Boolean)
+    const firstClause = clauses[0] || cleaned
+    if (firstClause.length <= maxLength) return firstClause.replace(/[，、：]+$/, '')
+
+    const phrases = firstClause.split(/[，,]+/).map(part => part.trim()).filter(Boolean)
+    let compact = ''
+    for (const phrase of phrases) {
+      const candidate = compact ? `${compact}，${phrase}` : phrase
+      if (candidate.length > maxLength) break
+      compact = candidate
+    }
+    return (compact || firstClause.slice(0, maxLength)).replace(/[，、：；。]+$/, '')
+  }
+
   function completeCvExperience(name: string) {
     completeExperience(name)
     if (!cvText) return
@@ -2366,8 +2390,9 @@ export default function InterviewPage() {
                       .map(text => text.trim())
                       .filter(text => text.length >= 8)
                       .filter(text => !/^(?:gsa|GSA).{0,20}(?:服务设计|硕士|博士|项目)|目标(?:院校|学校)|申请(?:方向|专业|项目)|硕士项目|博士项目/i.test(text))
-                      .slice(0, 3)
-                      .map(text => text.length > 72 ? `${text.slice(0, 72)}…` : text)
+                      .map(text => compactCvSidebarBullet(text))
+                      .filter(Boolean)
+                      .slice(0, 2)
                     if (bullets.length > 0) return { bullets, dimKey: 'experience' }
                   }
                   const entry = entries[entryIndex]
@@ -2393,7 +2418,11 @@ export default function InterviewPage() {
                         const expKey = `exp_${i}`
                         const isExpanded = expandedDimensions.has(expKey)
                         const sec = findSection(entry.name)
-                        const hasSummary = !!sec && sec.bullets.length > 0
+                        const sidebarBullets = sec?.bullets
+                          .map(bullet => compactCvSidebarBullet(bullet))
+                          .filter(Boolean)
+                          .slice(0, 2) || []
+                        const hasSummary = sidebarBullets.length > 0
                         const isCompleted = isExperienceCompleted(entry.name)
                         const isActive = isExperienceActive(entry.name)
 
@@ -2435,7 +2464,7 @@ export default function InterviewPage() {
                                   </div>
                                 ) : hasSummary ? (
                                   <div className="space-y-1 pt-2">
-                                    {sec!.bullets.map((b, bi) => (
+                                    {sidebarBullets.map((b, bi) => (
                                       <div key={bi} className="flex gap-2 items-start">
                                         <span className="w-1 h-1 rounded-full bg-stone-300 shrink-0 mt-1.5" />
                                         <p className="text-[11px] text-stone-500 leading-snug">{b}</p>

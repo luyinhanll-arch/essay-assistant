@@ -112,6 +112,51 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function compactSidebarBullet(value: string, maxLength = 32): string {
+  const cleaned = value
+    .replace(/^[·•]\s*/, '')
+    .replace(/\.{3,}|…+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (cleaned.length <= maxLength) return cleaned.replace(/[；。]+$/, '')
+
+  const clauses = cleaned.split(/[；。！？]+/).map(part => part.trim()).filter(Boolean)
+  const firstClause = clauses[0] || cleaned
+  if (firstClause.length <= maxLength) return firstClause.replace(/[，、：]+$/, '')
+
+  const phrases = firstClause.split(/[，,]+/).map(part => part.trim()).filter(Boolean)
+  let compact = ''
+  for (const phrase of phrases) {
+    const candidate = compact ? `${compact}，${phrase}` : phrase
+    if (candidate.length > maxLength) break
+    compact = candidate
+  }
+  return (compact || firstClause.slice(0, maxLength)).replace(/[，、：；。]+$/, '')
+}
+
+function compactCvStructuredSummary(summary: string): string {
+  const sections: Array<{ title: string; bullets: string[] }> = []
+  let current: { title: string; bullets: string[] } | null = null
+
+  for (const line of summary.split('\n').map(value => value.trim()).filter(Boolean)) {
+    if (line.startsWith('# ')) {
+      if (current) sections.push(current)
+      current = { title: line, bullets: [] }
+      continue
+    }
+    if (!current) continue
+    const bullet = compactSidebarBullet(line)
+    if (bullet && !current.bullets.includes(bullet) && current.bullets.length < 2) {
+      current.bullets.push(bullet)
+    }
+  }
+  if (current) sections.push(current)
+
+  return sections
+    .map(section => `${section.title}\n${section.bullets.map(bullet => `· ${bullet}`).join('\n')}`.trim())
+    .join('\n\n') || summary
+}
+
 /**
  * Remove course learning mistakenly promoted to a standalone project by the
  * summarizer. A course item is retained only when the conversation identifies
@@ -568,6 +613,13 @@ ${raw}
       } catch {
         // dedup failed — use original
       }
+    }
+
+    // CV sidebar summaries should match the concise no-CV presentation even
+    // when the model returns verbose prose: keep at most two complete, compact
+    // facts per experience and never expose a cut-off ellipsis.
+    if (format === 'structured' && hasCv && isMultiEntryDim && raw !== '无') {
+      raw = compactCvStructuredSummary(raw)
     }
 
     return Response.json({ summary: raw })
